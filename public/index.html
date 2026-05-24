@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<meta http-equiv="Cache-Control" content="no-store" />
+		<meta http-equiv="Pragma" content="no-cache" />
+		<title>Robot Agent Demo</title>
+		<link rel="stylesheet" href="style.css?v=dev" />
+	</head>
+	<body>
+		<section id="setup">
+			<h1>Robot Agent Demo</h1>
+			<p>Continuous STT proof-of-concept + simulated motor tools.</p>
+			<button id="mic">Start continuous STT</button>
+			<button id="stopMic">Stop STT</button>
+			<button id="testTts">TTS testen</button>
+			<button id="enableCamera">Kamera aktivieren</button>
+			<button id="robotMode">Robot mode</button>
+			<div><input id="prompt" placeholder="type a command" /><button id="send">Send</button></div>
+			<pre id="log"></pre>
+		</section>
+		<section id="robot" hidden>
+			<div id="face" class="face idle">
+				<div class="brow left"></div>
+				<div class="brow right"></div>
+				<div class="eye left"></div>
+				<div class="eye right"></div>
+			</div>
+			<button id="back">setup</button>
+		</section>
+		<script src="app.js?v=dev"></script>
+	</body>
+</html>

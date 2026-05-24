@@ -1,0 +1,34 @@
+{
+	"name": "ft232h-phone-robot-agent-demo",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "node scripts/dev.mjs",
+		"build:stt": "node scripts/build-stt.mjs",
+		"download:stt-model": "node scripts/download-stt-model.mjs",
+		"stt:test": "node scripts/stt-test.mjs",
+		"compile:client": "esbuild src/client.ts --bundle --format=esm --target=es2022 --outfile=public/app.js",
+		"check": "biome check --write --error-on-warnings . && tsc --noEmit && npm run compile:client",
+		"typecheck": "tsc --noEmit",
+		"prepare": "husky"
+	},
+	"dependencies": {
+		"@earendil-works/pi-agent-core": "file:/Users/badlogic/workspaces/pi/packages/agent",
+		"@earendil-works/pi-ai": "file:/Users/badlogic/workspaces/pi/packages/ai",
+		"tsx": "4.22.1",
+		"typescript": "5.9.3",
+		"ws": "8.18.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.5",
+		"@types/node": "24.0.0",
+		"@types/ws": "8.5.13",
+		"concurrently": "9.2.1",
+		"esbuild": "0.28.0",
+		"husky": "9.1.7"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

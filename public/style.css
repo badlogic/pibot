@@ -1,0 +1,288 @@
+body {
+	font-family: system-ui, sans-serif;
+	margin: 0;
+	background: #111;
+	color: #eee;
+}
+
+#setup {
+	max-width: 800px;
+	margin: 2rem auto;
+	padding: 1rem;
+}
+
+button,
+input {
+	font-size: 1.1rem;
+	padding: 0.7rem;
+	margin: 0.25rem;
+}
+
+input {
+	width: min(80vw, 420px);
+}
+
+pre {
+	background: #000;
+	padding: 1rem;
+	height: 45vh;
+	overflow: auto;
+}
+
+#robot {
+	height: 100vh;
+	display: grid;
+	place-items: center;
+	background:
+		radial-gradient(circle at 50% 44%, rgba(75, 120, 180, 0.35), transparent 38%),
+		linear-gradient(180deg, #101522, #04060b 78%);
+	overflow: hidden;
+}
+
+#robot[hidden] {
+	display: none;
+}
+
+.face {
+	position: relative;
+	width: 82vw;
+	height: 54vw;
+	max-width: 720px;
+	max-height: 460px;
+	filter: drop-shadow(0 0 32px rgba(64, 240, 255, 0.22));
+	transition: filter 160ms ease, transform 160ms ease;
+}
+
+.eye {
+	position: absolute;
+	top: 37%;
+	width: 24%;
+	height: 32%;
+	background: linear-gradient(180deg, #d7ffff, #58e8ff 58%, #33a8ff);
+	border-radius: 48% 48% 52% 52%;
+	box-shadow:
+		0 0 28px #66f4ff,
+		0 0 72px rgba(57, 216, 255, 0.45),
+		inset 0 -14px 24px rgba(0, 68, 120, 0.22);
+	transform-origin: center;
+	animation: idle-blink 5.5s infinite;
+}
+
+.eye.left {
+	left: 18%;
+}
+
+.eye.right {
+	right: 18%;
+}
+
+.brow {
+	position: absolute;
+	top: 24%;
+	width: 28%;
+	height: 7%;
+	background: linear-gradient(90deg, #ffffff, #9ff5ff);
+	border-radius: 999px;
+	box-shadow: 0 0 22px rgba(190, 250, 255, 0.55);
+	transition: transform 180ms ease, top 180ms ease;
+}
+
+.brow.left {
+	left: 15%;
+	transform: rotate(-8deg);
+}
+
+.brow.right {
+	right: 15%;
+	transform: rotate(8deg);
+}
+
+.face.idle .eye {
+	animation: idle-blink 5.5s infinite, idle-float 3.6s infinite ease-in-out;
+}
+
+.face.listening .eye {
+	animation: attentive-blink 4s infinite, attentive-scan 2.6s infinite ease-in-out;
+}
+
+.face.listening .brow.left {
+	transform: rotate(-2deg);
+}
+
+.face.listening .brow.right {
+	transform: rotate(2deg);
+}
+
+.face.hearing .eye {
+	animation: hearing-pulse 420ms infinite alternate ease-in-out;
+}
+
+.face.hearing .brow.left {
+	top: 21%;
+	transform: rotate(8deg);
+}
+
+.face.hearing .brow.right {
+	top: 21%;
+	transform: rotate(-8deg);
+}
+
+.face.thinking .eye {
+	animation: thinking-look 1.1s infinite ease-in-out;
+}
+
+.face.thinking .brow.left,
+.face.thinking .brow.right {
+	top: 21%;
+	transform: rotate(-18deg);
+}
+
+.face.speaking .eye {
+	animation: speak-bounce 180ms infinite alternate ease-in-out;
+}
+
+.face.speaking .brow.left {
+	transform: rotate(4deg) translateY(12%);
+}
+
+.face.speaking .brow.right {
+	transform: rotate(-4deg) translateY(-6%);
+}
+
+.face.tool {
+	animation: tool-lean 420ms infinite alternate ease-in-out;
+}
+
+.face.tool .eye {
+	animation: tool-squint 360ms infinite alternate ease-in-out;
+}
+
+.face.error {
+	filter: hue-rotate(130deg) saturate(1.6) drop-shadow(0 0 34px rgba(255, 90, 120, 0.4));
+	animation: error-shake 90ms 6;
+}
+
+.face.error .eye {
+	background: linear-gradient(180deg, #fff, #ff6b96);
+	box-shadow: 0 0 40px #ff4d88;
+}
+
+#back {
+	position: fixed;
+	top: 1rem;
+	right: 1rem;
+	opacity: 0.18;
+}
+
+.sim {
+	color: #7f7;
+}
+
+.stt {
+	color: #fc7;
+}
+
+.agent {
+	color: #9cf;
+}
+
+@keyframes idle-blink {
+	0%,
+	92%,
+	100% {
+		transform: scaleY(1);
+	}
+	95% {
+		transform: scaleY(0.08);
+	}
+}
+
+@keyframes idle-float {
+	0%,
+	100% {
+		translate: 0 0;
+	}
+	50% {
+		translate: 0 -2%;
+	}
+}
+
+@keyframes attentive-blink {
+	0%,
+	88%,
+	100% {
+		transform: scaleY(1.05);
+	}
+	92% {
+		transform: scaleY(0.12);
+	}
+}
+
+@keyframes attentive-scan {
+	0%,
+	100% {
+		translate: -2% 0;
+	}
+	50% {
+		translate: 2% 0;
+	}
+}
+
+@keyframes hearing-pulse {
+	from {
+		transform: scale(1.02);
+		box-shadow: 0 0 35px #6ff;
+	}
+	to {
+		transform: scale(1.18);
+		box-shadow: 0 0 80px #dff;
+	}
+}
+
+@keyframes thinking-look {
+	0%,
+	100% {
+		transform: translateX(-12%) scaleY(0.78);
+	}
+	50% {
+		transform: translateX(12%) scaleY(0.9);
+	}
+}
+
+@keyframes speak-bounce {
+	from {
+		transform: scaleY(0.72) translateY(5%);
+		filter: brightness(0.9);
+	}
+	to {
+		transform: scaleY(1.12) translateY(-4%);
+		filter: brightness(1.18);
+	}
+}
+
+@keyframes tool-lean {
+	from {
+		transform: rotate(-2.5deg) translateX(-1.5%);
+	}
+	to {
+		transform: rotate(2.5deg) translateX(1.5%);
+	}
+}
+
+@keyframes tool-squint {
+	from {
+		transform: scaleY(0.65) scaleX(1.1);
+	}
+	to {
+		transform: scaleY(0.95) scaleX(0.95);
+	}
+}
+
+@keyframes error-shake {
+	from {
+		transform: translateX(-2%);
+	}
+	to {
+		transform: translateX(2%);
+	}
+}

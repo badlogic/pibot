@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FT232H H-Bridge Control</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    button { font-size: 1.1rem; padding: .7rem 1rem; margin: .25rem; }
+    #stop { background: #b00020; color: white; }
+    .row { margin: 1rem 0; }
+    pre { background: #111; color: #eee; padding: 1rem; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>FT232H H-Bridge Control</h1>
+
+  <p>
+    Wiring: FT232H <b>D4</b> → IN1, <b>D5</b> → IN2, <b>GND</b> → H-bridge logic GND.
+  </p>
+
+  <div class="row">
+    <button id="connect">Connect FT232H</button>
+    <button id="stop">STOP D4=0 D5=0</button>
+  </div>
+
+  <div class="row">
+    <button id="fwd">Forward D4=1 D5=0</button>
+    <button id="rev">Reverse D4=0 D5=1</button>
+    <button id="brake">Brake D4=1 D5=1</button>
+  </div>
+
+  <div class="row">
+    <button id="alt">Alternate 5s</button>
+    <button id="altStop">Stop alternating</button>
+  </div>
+
+  <pre id="log"></pre>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

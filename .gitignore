@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# env/secrets
+.env
+.env.*
+!.env.example
+
+# generated web bundle
+public/app.js
+
+# local runtime data
+/data/*.json
+
+# native build artifacts
+native/pibot-stt/build/
+models/
+
+# logs/pids
+*.log
+*.pid
+/tmp/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
