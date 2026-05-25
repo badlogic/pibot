@@ -7,12 +7,15 @@ type ServerMessage =
 	| { type: "motor_request"; id: string; command: MotorCommand; durationMs: number; degrees?: number }
 	| { type: "error"; message: string }
 	| { type: "speak_request"; id: string; text: string }
+	| { type: "cancel_speech"; reason: string }
 	| {
 			type: "stt_event";
 			event: "loading" | "ready" | "speech_start" | "speech_end" | "speech_drop" | "error";
 			message?: string;
 	  }
+	| { type: "stt_interim"; text: string }
 	| { type: "stt_final"; text: string }
+	| { type: "session_reset" }
 	| { type: "agent_event"; event: AgentEvent };
 
 interface AgentMessageLike {
@@ -44,6 +47,7 @@ const ttsProviderSelect = document.querySelector<HTMLSelectElement>("#ttsProvide
 const testTtsButton = document.querySelector<HTMLButtonElement>("#testTts");
 const enableCameraButton = document.querySelector<HTMLButtonElement>("#enableCamera");
 const startAllButton = document.querySelector<HTMLButtonElement>("#startAll");
+const resetSessionButton = document.querySelector<HTMLButtonElement>("#resetSession");
 const gyroStatusEl = document.querySelector<HTMLElement>("#gyroStatus");
 
 if (
@@ -61,6 +65,7 @@ if (
 	!testTtsButton ||
 	!enableCameraButton ||
 	!startAllButton ||
+	!resetSessionButton ||
 	!gyroStatusEl
 ) {
 	throw new Error("Missing required DOM elements");
@@ -92,6 +97,7 @@ let robotVoiceEffectCleanup: (() => void) | undefined;
 let audioContext: AudioContext | undefined;
 let ttsGeneration = 0;
 let activeSpeakRequestId: string | undefined;
+let suppressSttPhaseUntil = 0;
 let cameraStream: MediaStream | undefined;
 let cameraVideo: HTMLVideoElement | undefined;
 const cameraEnabledKey = "robot-camera-enabled";
@@ -849,10 +855,29 @@ function resetRecognitionAfterTts(): void {
 	if (recognitionWanted) setPhase("listening");
 }
 
+function ttsAudioActive(): boolean {
+	return currentTtsAudio !== undefined;
+}
+
+function sttPhaseSuppressed(): boolean {
+	return Date.now() < suppressSttPhaseUntil;
+}
+
 function interruptTtsOnly(): void {
 	ttsGeneration++;
 	clearCurrentTtsAudio();
 	if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+function cancelSpeechFromServer(reason: string): void {
+	const requestId = activeSpeakRequestId;
+	interruptTtsOnly();
+	activeSpeakRequestId = undefined;
+	if (requestId) send({ type: "speak_cancelled", id: requestId });
+	ignoreMicUntil = Date.now() + 500;
+	suppressSttPhaseUntil = Date.now() + 5000;
+	setPhase(recognitionWanted ? "listening" : "idle");
+	log(`TTS cancelled by server: ${reason}`, "stt");
 }
 
 function stopLocalMotorsNow(): void {
@@ -915,7 +940,7 @@ function speakGerman(text: string, requestId?: string): void {
 	activeSpeakRequestId = requestId;
 	clearCurrentTtsAudio();
 	setPhase("speaking");
-	ignoreMicUntil = Number.POSITIVE_INFINITY;
+	ignoreMicUntil = 0;
 
 	const audio = new Audio(`/api/tts?provider=${encodeURIComponent(provider)}&text=${encodeURIComponent(trimmed)}`);
 	currentTtsAudio = audio;
@@ -938,6 +963,25 @@ function speakGerman(text: string, requestId?: string): void {
 }
 
 let reloadVersion: string | undefined;
+let autoReloadPending = false;
+
+function robotModeActive(): boolean {
+	return !robotSection.hidden;
+}
+
+function requestAutoReload(reason: string): void {
+	if (robotModeActive()) {
+		if (!autoReloadPending) log(`Auto-reload deferred while robot mode is active: ${reason}`, "agent");
+		autoReloadPending = true;
+		return;
+	}
+	location.reload();
+}
+
+function reloadIfPending(): void {
+	if (!autoReloadPending || robotModeActive()) return;
+	location.reload();
+}
 
 async function pollReloadVersion(): Promise<void> {
 	try {
@@ -948,7 +992,7 @@ async function pollReloadVersion(): Promise<void> {
 			reloadVersion = data.version;
 			return;
 		}
-		if (data.version !== reloadVersion) location.reload();
+		if (data.version !== reloadVersion) requestAutoReload("server version changed");
 	} catch (error) {
 		sendClientLog("debug", `reload poll failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -957,9 +1001,9 @@ async function pollReloadVersion(): Promise<void> {
 function connectReloadSocket(reloadOnOpen = false): void {
 	const reloadWs = new WebSocket(`${wsProtocol}://${location.host}/__reload`);
 	reloadWs.onopen = () => {
-		if (reloadOnOpen) location.reload();
+		if (reloadOnOpen) requestAutoReload("reload socket reconnected");
 	};
-	reloadWs.onmessage = () => location.reload();
+	reloadWs.onmessage = () => requestAutoReload("reload socket message");
 	reloadWs.onclose = () => {
 		setTimeout(() => connectReloadSocket(true), 500);
 	};
@@ -994,27 +1038,44 @@ ws.onmessage = (event) => {
 		if (ttsEnabled) speakGerman(message.text, message.id);
 		else send({ type: "speak_done", id: message.id });
 	}
+	if (message.type === "cancel_speech") {
+		cancelSpeechFromServer(message.reason);
+	}
 	if (message.type === "stt_event") {
 		if (message.event === "loading") log("local STT loading Parakeet/Silero worker", "stt");
 		if (message.event === "ready") log("local STT worker ready", "stt");
 		if (message.event === "speech_start") {
-			setRobotFaceState("hearing");
+			if (!ttsAudioActive() && !sttPhaseSuppressed()) setRobotFaceState("hearing");
 			log("STT speech started", "stt");
 		}
 		if (message.event === "speech_end") {
-			setPhase("thinking");
+			if (!ttsAudioActive() && !sttPhaseSuppressed()) setPhase("thinking");
 			log("STT speech ended, transcribing", "stt");
 		}
-		if (message.event === "speech_drop") setPhase(recognitionWanted ? "listening" : "idle");
+		if (message.event === "speech_drop" && !ttsAudioActive() && !sttPhaseSuppressed()) {
+			setPhase(recognitionWanted ? "listening" : "idle");
+		}
 		if (message.event === "error") {
 			setPhase("idle");
 			setRobotFaceState("error");
 			log(`STT error ${message.message ?? "unknown"}`, "stt");
 		}
 	}
+	if (message.type === "session_reset") {
+		log("server confirmed session reset; context cleared", "agent");
+		setPhase(recognitionWanted ? "listening" : "idle");
+		return;
+	}
+	if (message.type === "stt_interim") {
+		if (message.text.trim()) log(`STT interim: ${message.text}`, "stt");
+	}
 	if (message.type === "stt_final") {
 		log(`STT final: ${message.text || "-"}`, "stt");
-		if (!message.text.trim()) setPhase(recognitionWanted ? "listening" : "idle");
+		if (sttPhaseSuppressed()) {
+			setPhase(recognitionWanted ? "listening" : "idle");
+			return;
+		}
+		if (!message.text.trim() && !ttsAudioActive()) setPhase(recognitionWanted ? "listening" : "idle");
 	}
 	if (message.type === "agent_event") {
 		const agentEvent = message.event;
@@ -1061,7 +1122,7 @@ robotModeButton.onclick = () => {
 startAllButton.onclick = async () => {
 	startAllButton.disabled = true;
 	const previousLabel = startAllButton.textContent;
-	startAllButton.textContent = "Starte...";
+	startAllButton.textContent = "Starting...";
 	try {
 		enableTts();
 		log(`TTS enabled: ${ttsProviderLabel(selectedTtsProvider())}`, "stt");
@@ -1087,6 +1148,7 @@ startAllButton.onclick = async () => {
 backButton.onclick = async () => {
 	robot.hidden = true;
 	setup.hidden = false;
+	reloadIfPending();
 	try {
 		if (document.fullscreenElement) await document.exitFullscreen();
 	} catch (error) {
@@ -1098,6 +1160,7 @@ document.addEventListener("fullscreenchange", () => {
 	if (!document.fullscreenElement && !robot.hidden) {
 		robot.hidden = true;
 		setup.hidden = false;
+		reloadIfPending();
 	}
 });
 
@@ -1115,6 +1178,12 @@ micButton.onclick = () => {
 };
 
 stopMicButton.onclick = stopRecognition;
+
+resetSessionButton.onclick = () => {
+	if (!confirm("Reset session? All context messages will be lost.")) return;
+	send({ type: "reset_session" });
+	log("session reset requested", "agent");
+};
 
 enableCameraButton.onclick = async () => {
 	try {

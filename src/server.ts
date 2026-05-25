@@ -73,13 +73,18 @@ type ClientMsg =
 	| { type: "speak_done"; id: string }
 	| { type: "speak_cancelled"; id: string }
 	| ClientLogMsg
-	| { type: "abort" };
+	| { type: "abort" }
+	| { type: "reset_session" };
 
 interface PhotoCapture {
 	dataUrl: string;
 	mimeType: string;
 	base64: string;
 }
+
+type ServerToClientMsg =
+	| { type: "cancel_speech"; reason: string }
+	| { type: "sim_motor"; command: string; durationMs: number };
 
 type SttWorkerMsg =
 	| {
@@ -90,10 +95,12 @@ type SttWorkerMsg =
 			minSilenceMs: number;
 			speechPadMs: number;
 			prerollMs: number;
+			interimIntervalMs?: number;
 	  }
 	| { type: "speech_start"; index: number; time: number }
 	| { type: "speech_end"; index: number; duration: number }
 	| { type: "speech_drop"; index: number; duration: number; reason: string }
+	| { type: "interim"; index: number; text: string; audioMs: number; decodeMs: number }
 	| { type: "final"; index: number; text: string; duration: number; decodeMs: number }
 	| { type: "error"; message: string };
 
@@ -127,6 +134,8 @@ let parakeetSttReady = false;
 let parakeetSttLoadingAnnounced = false;
 let parakeetSttStdout = "";
 let sttPromptQueue: Promise<void> = Promise.resolve();
+let stoppedSttUtteranceIndex: number | undefined;
+let lastSpeechResolvedAt = 0;
 const motorLog: Array<{ t: number; command: string; durationMs: number }> = [];
 
 function stopChildProcesses(): void {
@@ -160,6 +169,18 @@ function broadcast(data: object): void {
 	for (const client of clients) {
 		if (client.readyState === WebSocket.OPEN) client.send(msg);
 	}
+}
+
+function sendToClient(client: WebSocket | undefined, data: ServerToClientMsg): void {
+	if (!client || client.readyState !== WebSocket.OPEN) return;
+	client.send(JSON.stringify(data));
+}
+
+function cancelSpeechOnClients(reason: string): void {
+	const targets = new Set<WebSocket>();
+	if (robotClient) targets.add(robotClient);
+	for (const pending of pendingSpeech.values()) targets.add(pending.client);
+	for (const client of targets) sendToClient(client, { type: "cancel_speech", reason });
 }
 
 function startParakeetSttWorker(): void {
@@ -237,8 +258,13 @@ function looksLikeStopCommand(text: string): boolean {
 	return false;
 }
 
+function shouldIgnoreNonStopSttAsTtsBleed(): boolean {
+	return pendingSpeech.size > 0 || Date.now() - lastSpeechResolvedAt < 1500;
+}
+
 async function performHarnessAbort(reason: string): Promise<void> {
 	console.log(`[abort] ${reason}`);
+	cancelSpeechOnClients(reason);
 	resolveAllSpeech();
 	rejectAllPhotos(reason);
 	rejectAllMotors(reason);
@@ -275,12 +301,13 @@ function handleParakeetSttMessage(message: SttWorkerMsg): void {
 	if (message.type === "ready") {
 		parakeetSttReady = true;
 		console.log(
-			`[stt] Parakeet ready sampleRate=${message.sampleRate} vadChunkMs=${message.vadChunkMs} threshold=${message.vadThreshold} minSilenceMs=${message.minSilenceMs} prerollMs=${message.prerollMs}`,
+			`[stt] Parakeet ready sampleRate=${message.sampleRate} vadChunkMs=${message.vadChunkMs} threshold=${message.vadThreshold} minSilenceMs=${message.minSilenceMs} prerollMs=${message.prerollMs} interimIntervalMs=${message.interimIntervalMs ?? "off"}`,
 		);
 		broadcast({ type: "stt_event", event: "ready" });
 		return;
 	}
 	if (message.type === "speech_start") {
+		stoppedSttUtteranceIndex = undefined;
 		console.log(`[stt] speech_start #${message.index}`);
 		broadcast({ type: "stt_event", event: "speech_start" });
 		return;
@@ -297,14 +324,36 @@ function handleParakeetSttMessage(message: SttWorkerMsg): void {
 		broadcast({ type: "stt_event", event: "speech_drop" });
 		return;
 	}
+	if (message.type === "interim") {
+		const text = message.text.trim();
+		console.log(
+			`[stt] interim #${message.index} audioMs=${message.audioMs} decodeMs=${message.decodeMs} text=${JSON.stringify(text)}`,
+		);
+		broadcast({ type: "stt_interim", text });
+		if (text && looksLikeStopCommand(text) && stoppedSttUtteranceIndex !== message.index) {
+			stoppedSttUtteranceIndex = message.index;
+			console.log(`[stt] stop-word detected in interim, aborting current turn`);
+			void performHarnessAbort(`interim stop word: ${text}`);
+		}
+		return;
+	}
 	if (message.type === "final") {
 		const text = message.text.trim();
 		console.log(`[stt] final #${message.index} decodeMs=${message.decodeMs} text=${JSON.stringify(text)}`);
 		broadcast({ type: "stt_final", text });
 		if (!text) return;
+		if (stoppedSttUtteranceIndex === message.index) {
+			console.log(`[stt] ignoring final #${message.index}; utterance already handled as stop`);
+			return;
+		}
 		if (looksLikeStopCommand(text)) {
-			console.log(`[stt] stop-word detected, aborting current turn`);
+			stoppedSttUtteranceIndex = message.index;
+			console.log(`[stt] stop-word detected in final, aborting current turn`);
 			void performHarnessAbort(`stop word: ${text}`);
+			return;
+		}
+		if (shouldIgnoreNonStopSttAsTtsBleed()) {
+			console.log(`[stt] ignoring non-stop final during/recently-after TTS: ${JSON.stringify(text)}`);
 			return;
 		}
 		enqueueSttPrompt(text);
@@ -331,6 +380,7 @@ function resolveSpeech(id: string): void {
 	const pending = pendingSpeech.get(id);
 	if (!pending) return;
 	console.log(`[tts] speech resolved id=${id}`);
+	lastSpeechResolvedAt = Date.now();
 	clearTimeout(pending.timeout);
 	pendingSpeech.delete(id);
 	pending.resolve();
@@ -642,19 +692,22 @@ const tools: AgentTool[] = [
 	memoryTool,
 ];
 
-const session = await new InMemorySessionRepo().create({ id: "robot-demo" });
-const harness = new AgentHarness({
-	env: new NodeExecutionEnv({ cwd: process.cwd() }),
-	session,
-	model: selectModel(),
-	getApiKeyAndHeaders: async (model) => {
-		const envName = `${model.provider.toUpperCase()}_API_KEY`.replaceAll("-", "_");
-		const apiKey = process.env[envName] ?? process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY;
-		return apiKey ? { apiKey } : undefined;
-	},
-	tools,
-	systemPrompt:
-		async () => `Du bist das Gehirn eines kleinen Roboters mit Smartphone. Antworte immer auf Deutsch. Sei verspielt, freundlich und sicher. Verwende keine Emojis. Nutze Bewegungswerkzeuge nur für kurze Dauer. Die Bewegungswerkzeuge stoppen automatisch nach ihrer Dauer. Die Hardware kann nur vorwärts fahren und sich gegen den Uhrzeigersinn drehen; rückwärts und rechts gibt es nicht. Für ungefähre Drehwinkel nutze turn_left_degrees. Wenn du aktuelle Fakten oder Internet-Informationen brauchst, nutze web_search. Wenn du Details aus einem gefundenen Treffer brauchst, nutze fetch_page_content mit der URL.
+const sessionRepo = new InMemorySessionRepo();
+
+async function buildHarness(): Promise<AgentHarness> {
+	const session = await sessionRepo.create({ id: `robot-demo-${Date.now()}` });
+	const harness = new AgentHarness({
+		env: new NodeExecutionEnv({ cwd: process.cwd() }),
+		session,
+		model: selectModel(),
+		getApiKeyAndHeaders: async (model) => {
+			const envName = `${model.provider.toUpperCase()}_API_KEY`.replaceAll("-", "_");
+			const apiKey = process.env[envName] ?? process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+			return apiKey ? { apiKey } : undefined;
+		},
+		tools,
+		systemPrompt:
+			async () => `Du bist das Gehirn eines kleinen Roboters mit Smartphone. Antworte immer auf Deutsch. Sei verspielt, freundlich und sicher. Verwende keine Emojis. Nutze Bewegungswerkzeuge nur für kurze Dauer. Die Bewegungswerkzeuge stoppen automatisch nach ihrer Dauer. Die Hardware kann nur vorwärts fahren und sich gegen den Uhrzeigersinn drehen; rückwärts und rechts gibt es nicht. Für ungefähre Drehwinkel nutze turn_left_degrees. Wenn du aktuelle Fakten oder Internet-Informationen brauchst, nutze web_search. Wenn du Details aus einem gefundenen Treffer brauchst, nutze fetch_page_content mit der URL.
 
 Persistente Erinnerungen:
 ${await formatMemoriesForSystemPrompt()}
@@ -663,16 +716,25 @@ Memory-Tool-Aufrufschema:
 - Alle Erinnerungen lesen: memory({"action":"read"})
 - Neue Erinnerung speichern: memory({"action":"append","text":"Pipi ist der Name des Roboters"})
 - Erinnerung löschen: memory({"action":"remove","index":0})`,
-});
+	});
+	harness.on("context", (event) => ({ messages: pruneImagesForContext(event.messages, maxContextImages) }));
+	harness.subscribe(async (event) => {
+		broadcast({ type: "agent_event", event });
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			await speakOnClient(extractAssistantText(event.message));
+		}
+	});
+	return harness;
+}
 
-harness.on("context", (event) => ({ messages: pruneImagesForContext(event.messages, maxContextImages) }));
+let harness = await buildHarness();
 
-harness.subscribe(async (event) => {
-	broadcast({ type: "agent_event", event });
-	if (event.type === "message_end" && event.message.role === "assistant") {
-		await speakOnClient(extractAssistantText(event.message));
-	}
-});
+async function resetHarnessSession(reason: string): Promise<void> {
+	console.log(`[session] reset: ${reason}`);
+	await performHarnessAbort(`reset: ${reason}`);
+	harness = await buildHarness();
+	broadcast({ type: "session_reset" });
+}
 
 function pocketTtsEndpoint(): { host: string; port: number } {
 	const url = new URL(pocketTtsUrl);
@@ -869,6 +931,9 @@ async function handleClientMessage(msg: ClientMsg): Promise<void> {
 	if (msg.type === "abort") {
 		await performHarnessAbort("client abort");
 	}
+	if (msg.type === "reset_session") {
+		await resetHarnessSession("client request");
+	}
 }
 
 const server = createServer(async (req, res) => {
@@ -906,7 +971,12 @@ const server = createServer(async (req, res) => {
 	try {
 		const data = await readFile(file);
 		const extension = extname(file);
-		const contentType = extension === ".js" ? "text/javascript" : extension === ".css" ? "text/css" : "text/html";
+		const contentType =
+			extension === ".js"
+				? "text/javascript; charset=utf-8"
+				: extension === ".css"
+					? "text/css; charset=utf-8"
+					: "text/html; charset=utf-8";
 		res.writeHead(200, {
 			"content-type": contentType,
 			"cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",

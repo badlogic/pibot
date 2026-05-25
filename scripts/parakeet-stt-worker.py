@@ -20,6 +20,8 @@ MIN_SILENCE_MS = int(os.environ.get("PARAKEET_MIN_SILENCE_MS", "800"))
 SPEECH_PAD_MS = int(os.environ.get("PARAKEET_SPEECH_PAD_MS", "250"))
 PREROLL_MS = int(os.environ.get("PARAKEET_PREROLL_MS", "1800"))
 MIN_UTTERANCE_MS = int(os.environ.get("PARAKEET_MIN_UTTERANCE_MS", "450"))
+INTERIM_INTERVAL_MS = int(os.environ.get("PARAKEET_INTERIM_INTERVAL_MS", "600"))
+INTERIM_MIN_AUDIO_MS = int(os.environ.get("PARAKEET_INTERIM_MIN_AUDIO_MS", "600"))
 
 
 def emit(message):
@@ -91,7 +93,10 @@ def main():
         "minSilenceMs": MIN_SILENCE_MS,
         "speechPadMs": SPEECH_PAD_MS,
         "prerollMs": PREROLL_MS,
+        "interimIntervalMs": INTERIM_INTERVAL_MS,
     })
+
+    interim_min_frames = max(1, SAMPLE_RATE * INTERIM_MIN_AUDIO_MS // 1000)
 
     pending = np.empty(0, dtype=np.float32)
     preroll = collections.deque(maxlen=preroll_chunks)
@@ -119,11 +124,32 @@ def main():
                 in_utterance = True
                 utterance_index += 1
                 utterance_chunks = list(preroll)
+                last_interim_ms = 0
                 emit({"type": "speech_start", "index": utterance_index, "time": elapsed})
                 continue
 
             if in_utterance:
                 utterance_chunks.append(chunk)
+                if INTERIM_INTERVAL_MS > 0 and utterance_chunks:
+                    audio_so_far = np.concatenate(utterance_chunks)
+                    audio_ms = int(len(audio_so_far) * 1000 / SAMPLE_RATE)
+                    if (
+                        len(audio_so_far) >= interim_min_frames
+                        and audio_ms - last_interim_ms >= INTERIM_INTERVAL_MS
+                    ):
+                        last_interim_ms = audio_ms
+                        decode_started = time.monotonic()
+                        try:
+                            text = batch_transcribe(model, audio_so_far)
+                            emit({
+                                "type": "interim",
+                                "index": utterance_index,
+                                "text": text,
+                                "audioMs": audio_ms,
+                                "decodeMs": round((time.monotonic() - decode_started) * 1000),
+                            })
+                        except Exception as exc:
+                            emit({"type": "error", "message": str(exc)})
 
             if vad_event and "end" in vad_event and in_utterance:
                 audio = np.concatenate(utterance_chunks) if utterance_chunks else np.empty(0, dtype=np.float32)

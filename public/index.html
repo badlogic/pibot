@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 	<head>
+		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
 		<meta http-equiv="Cache-Control" content="no-store" />
 		<meta http-equiv="Pragma" content="no-cache" />
@@ -11,9 +12,10 @@
 		<section id="setup">
 			<h1>Robot Agent Demo</h1>
 			<p>Continuous STT proof-of-concept + simulated motor tools.</p>
-			<button id="startAll" class="primary">Roboter starten</button>
+			<button id="startAll" class="primary">Start robot</button>
+			<button id="resetSession">Reset session</button>
 			<details>
-				<summary>Debug-Steuerung</summary>
+				<summary>Debug controls</summary>
 				<button id="mic">Start continuous STT</button>
 				<button id="stopMic">Stop STT</button>
 				<label>
@@ -23,8 +25,8 @@
 						<option value="pocket">Kyutai Pocket</option>
 					</select>
 				</label>
-				<button id="testTts">TTS testen</button>
-				<button id="enableCamera">Kamera aktivieren</button>
+				<button id="testTts">Test TTS</button>
+				<button id="enableCamera">Enable camera</button>
 				<button id="robotMode">Robot mode</button>
 			</details>
 			<div><input id="prompt" placeholder="type a command" /><button id="send">Send</button></div>
