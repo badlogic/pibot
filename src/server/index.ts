@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { extname, join, resolve } from "node:path";
@@ -17,10 +16,12 @@ import {
 	type TextContent,
 } from "@earendil-works/pi-ai";
 import { WebSocket, WebSocketServer } from "ws";
-import type { ClientLogMsg, ClientMessage, MotorCommand, PhotoCapture } from "../types.js";
-import { formatMemoriesForSystemPrompt } from "./memory.js";
+import type { ClientLogMsg, ClientMessage } from "../types.js";
+import { createLogger } from "./logger.js";
+import { createEnvMemoryStore } from "./memory-store.js";
+import { RobotClient } from "./robot-client.js";
 import { createSttService } from "./stt.js";
-import { createRobotTools, pruneImagesForContext } from "./tools.js";
+import { createRobotTools, pruneImagesForContext, stopMotorFireAndForget } from "./tools/index.js";
 import { createTtsService } from "./tts.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -30,28 +31,15 @@ const parakeetSttWorkerPath = resolve(__dirname, "../../scripts/parakeet-stt-wor
 const serverVersion = String(Date.now());
 const maxContextImages = Number(process.env.MAX_CONTEXT_IMAGES ?? 4);
 
+const logger = createLogger();
+const serverLogger = logger.tag("server");
+const clientLogger = logger.tag("client");
+const agentLogger = logger.tag("agent");
+const contextLogger = logger.tag("context");
 const clients = new Set<WebSocket>();
-const clientUserAgents = new Map<WebSocket, string>();
-const pendingPhotos = new Map<
-	string,
-	{
-		client: WebSocket;
-		resolve: (capture: PhotoCapture) => void;
-		reject: (error: Error) => void;
-		timeout: NodeJS.Timeout;
-	}
->();
-const pendingMotors = new Map<
-	string,
-	{
-		client: WebSocket;
-		resolve: () => void;
-		reject: (error: Error) => void;
-		timeout: NodeJS.Timeout;
-	}
->();
-const motorLog: Array<{ t: number; command: string; durationMs: number }> = [];
-let robotClient: WebSocket | undefined;
+const robot = new RobotClient(logger);
+const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+const memoryStore = createEnvMemoryStore(executionEnv, { path: process.env.MEMORY_FILE ?? "data/memories.json" });
 let sttPromptQueue: Promise<void> = Promise.resolve();
 let harness: AgentHarness;
 
@@ -62,8 +50,7 @@ async function readRequestJson<T>(req: AsyncIterable<Uint8Array>): Promise<T> {
 }
 
 function logClientMessage(msg: ClientLogMsg): void {
-	const level = msg.level === "error" ? "error" : msg.level === "warn" ? "warn" : "log";
-	console[level](`[client:${msg.level}] ${msg.message} (${msg.url}) ua=${msg.userAgent}`);
+	clientLogger.tag(msg.level).log(msg.message);
 }
 
 function broadcast(data: object): void {
@@ -73,103 +60,17 @@ function broadcast(data: object): void {
 	}
 }
 
-function isMobileRobotClient(client: WebSocket): boolean {
-	return /Android|Mobile/i.test(clientUserAgents.get(client) ?? "");
-}
-
-function selectRobotClient(candidate: WebSocket): void {
-	if (!robotClient || robotClient.readyState !== WebSocket.OPEN || isMobileRobotClient(candidate)) {
-		robotClient = candidate;
-		console.log(`[robot] selected client ua=${clientUserAgents.get(candidate) ?? "unknown"}`);
-	}
-}
-
-function rejectPhoto(id: string, error: Error): void {
-	const pending = pendingPhotos.get(id);
-	if (!pending) return;
-	clearTimeout(pending.timeout);
-	pendingPhotos.delete(id);
-	pending.reject(error);
-}
-
-function rejectPhotosForClient(client: WebSocket): void {
-	for (const [id, pending] of pendingPhotos) {
-		if (pending.client === client) rejectPhoto(id, new Error("Robot client disconnected"));
-	}
-}
-
-function rejectAllPhotos(reason: string): void {
-	for (const id of pendingPhotos.keys()) rejectPhoto(id, new Error(reason));
-}
-
-function resolvePhoto(id: string, capture: PhotoCapture): void {
-	const pending = pendingPhotos.get(id);
-	if (!pending) return;
-	clearTimeout(pending.timeout);
-	pendingPhotos.delete(id);
-	pending.resolve(capture);
-}
-
-async function capturePhotoFromClient(): Promise<PhotoCapture> {
-	const client = robotClient;
-	if (!client || client.readyState !== WebSocket.OPEN) throw new Error("Robot client not connected");
-	const id = randomUUID();
-	client.send(JSON.stringify({ type: "take_photo_request", id }));
-	return await new Promise<PhotoCapture>((resolve, reject) => {
-		const timeout = setTimeout(() => rejectPhoto(id, new Error("Photo capture timed out")), 15000);
-		pendingPhotos.set(id, { client, resolve, reject, timeout });
-	});
-}
-
-function rejectMotor(id: string, error: Error): void {
-	const pending = pendingMotors.get(id);
-	if (!pending) return;
-	clearTimeout(pending.timeout);
-	pendingMotors.delete(id);
-	pending.reject(error);
-}
-
-function resolveMotor(id: string): void {
-	const pending = pendingMotors.get(id);
-	if (!pending) return;
-	clearTimeout(pending.timeout);
-	pendingMotors.delete(id);
-	pending.resolve();
-}
-
-function rejectMotorsForClient(client: WebSocket): void {
-	for (const [id, pending] of pendingMotors) {
-		if (pending.client === client) rejectMotor(id, new Error("Robot client disconnected"));
-	}
-}
-
-function rejectAllMotors(reason: string): void {
-	for (const id of pendingMotors.keys()) rejectMotor(id, new Error(reason));
-}
-
-async function executeMotorOnClient(command: MotorCommand, durationMs: number, degrees?: number): Promise<void> {
-	const client = robotClient;
-	if (!client || client.readyState !== WebSocket.OPEN) throw new Error("Robot client not connected");
-	const id = randomUUID();
-	client.send(JSON.stringify({ type: "motor_request", id, command, durationMs, degrees }));
-	await new Promise<void>((resolve, reject) => {
-		const timeout = setTimeout(() => rejectMotor(id, new Error("Motor command timed out")), durationMs + 6000);
-		pendingMotors.set(id, { client, resolve, reject, timeout });
-	});
-}
-
-function stopMotorsImmediate(): void {
-	const client = robotClient;
-	if (!client || client.readyState !== WebSocket.OPEN) return;
-	client.send(JSON.stringify({ type: "motor_request", id: randomUUID(), command: "stop", durationMs: 0 }));
-}
-
 function extractAssistantText(message: AssistantMessage): string {
 	return message.content
 		.filter((entry): entry is TextContent => entry.type === "text")
 		.map((entry) => entry.text)
 		.join("")
 		.trim();
+}
+
+function formatMemoriesForSystemPrompt(memories: string[]): string {
+	if (memories.length === 0) return "No stored memories yet.";
+	return memories.map((memory, index) => `${index}: ${memory}`).join("\n");
 }
 
 function selectModel(): Model<Api> {
@@ -186,39 +87,37 @@ function selectModel(): Model<Api> {
 }
 
 const ttsService = createTtsService({
-	getRobotClient: () => robotClient,
-	getClientUserAgent: (client) => clientUserAgents.get(client),
+	logger,
+	getRobotClient: () => robot.currentClient(),
 });
 
 async function performHarnessAbort(reason: string, sttIndex?: number): Promise<void> {
-	console.log(`[abort] ${reason}`);
+	agentLogger.log(`abort: ${reason}`);
 	ttsService.cancelSpeechOnClients(reason, sttIndex);
 	ttsService.resolveAllSpeech();
-	rejectAllPhotos(reason);
-	rejectAllMotors(reason);
-	stopMotorsImmediate();
+	robot.rejectAll(reason);
+	stopMotorFireAndForget(robot);
 	try {
 		await harness.abort();
 	} catch (error) {
-		console.warn(`[abort] harness abort error: ${error instanceof Error ? error.message : String(error)}`);
+		agentLogger.log(`harness abort error: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	broadcast({ type: "sim_motor", command: "stop", durationMs: 0 });
 }
 
 function enqueueSttPrompt(text: string): void {
 	sttPromptQueue = sttPromptQueue.then(async () => {
 		for (let attempt = 1; attempt <= 30; attempt++) {
 			try {
-				await harness.prompt(`Vom Benutzer gehört: ${text}`);
+				await harness.prompt(`${text}`);
 				return;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (!message.includes("busy") || attempt === 30) {
-					console.warn(`[stt] prompt failed: ${message}`);
+					logger.tag("stt").log(`prompt failed: ${message}`);
 					broadcast({ type: "stt_event", event: "error", message });
 					return;
 				}
-				console.log(`[stt] harness busy; retrying prompt in 500ms attempt=${attempt}`);
+				logger.tag("stt").log(`harness busy; retrying prompt in 500ms attempt=${attempt}`);
 				await sleep(500);
 			}
 		}
@@ -227,6 +126,7 @@ function enqueueSttPrompt(text: string): void {
 
 const sttService = createSttService({
 	workerPath: parakeetSttWorkerPath,
+	logger,
 	broadcast,
 	enqueuePrompt: enqueueSttPrompt,
 	performAbort: performHarnessAbort,
@@ -236,25 +136,28 @@ const sttService = createSttService({
 function stopChildProcesses(): void {
 	ttsService.stopChildProcess();
 	sttService.stopChildProcess();
+	robot.stop();
 }
 
 process.once("exit", stopChildProcesses);
-process.once("SIGINT", () => {
+process.once("SIGINT", async () => {
 	stopChildProcesses();
+	await logger.flush();
 	process.exit(130);
 });
-process.once("SIGTERM", () => {
+process.once("SIGTERM", async () => {
 	stopChildProcesses();
+	await logger.flush();
 	process.exit(143);
 });
 
-const tools = createRobotTools({ broadcast, executeMotorOnClient, capturePhotoFromClient, motorLog });
+const tools = createRobotTools(robot, memoryStore);
 const sessionRepo = new InMemorySessionRepo();
 
 async function buildHarness(): Promise<AgentHarness> {
 	const session = await sessionRepo.create({ id: `robot-demo-${Date.now()}` });
 	const newHarness = new AgentHarness({
-		env: new NodeExecutionEnv({ cwd: process.cwd() }),
+		env: executionEnv,
 		session,
 		model: selectModel(),
 		getApiKeyAndHeaders: async (model) => {
@@ -267,14 +170,16 @@ async function buildHarness(): Promise<AgentHarness> {
 			async () => `Du bist das Gehirn eines kleinen Roboters mit Smartphone. Antworte immer auf Deutsch. Sei verspielt, freundlich und sicher. Verwende keine Emojis. Nutze Bewegungswerkzeuge nur für kurze Dauer. Die Bewegungswerkzeuge stoppen automatisch nach ihrer Dauer. Die Hardware kann nur vorwärts fahren und sich gegen den Uhrzeigersinn drehen; rückwärts und rechts gibt es nicht. Für ungefähre Drehwinkel nutze turn_left_degrees. Wenn du aktuelle Fakten oder Internet-Informationen brauchst, nutze web_search. Wenn du Details aus einem gefundenen Treffer brauchst, nutze fetch_page_content mit der URL.
 
 Persistente Erinnerungen:
-${await formatMemoriesForSystemPrompt()}
+${formatMemoriesForSystemPrompt(await memoryStore.list())}
 
 Memory-Tool-Aufrufschema:
 - Alle Erinnerungen lesen: memory({"action":"read"})
 - Neue Erinnerung speichern: memory({"action":"append","text":"Pipi ist der Name des Roboters"})
 - Erinnerung löschen: memory({"action":"remove","index":0})`,
 	});
-	newHarness.on("context", (event) => ({ messages: pruneImagesForContext(event.messages, maxContextImages) }));
+	newHarness.on("context", (event) => ({
+		messages: pruneImagesForContext(event.messages, maxContextImages, contextLogger),
+	}));
 	newHarness.subscribe(async (event) => {
 		broadcast({ type: "agent_event", event });
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -287,16 +192,10 @@ Memory-Tool-Aufrufschema:
 harness = await buildHarness();
 
 async function resetHarnessSession(reason: string): Promise<void> {
-	console.log(`[session] reset: ${reason}`);
+	serverLogger.log(`session reset: ${reason}`);
 	await performHarnessAbort(`reset: ${reason}`);
 	harness = await buildHarness();
 	broadcast({ type: "session_reset" });
-}
-
-function parsePhotoDataUrl(dataUrl: string): { base64: string; mimeType: string } | undefined {
-	const match = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl);
-	if (!match) return undefined;
-	return { mimeType: match[1] ?? "image/jpeg", base64: match[2] ?? "" };
 }
 
 async function handleClientMessage(msg: ClientMessage): Promise<void> {
@@ -308,28 +207,7 @@ async function handleClientMessage(msg: ClientMessage): Promise<void> {
 		ttsService.resolveSpeech(msg.id);
 		return;
 	}
-	if (msg.type === "motor_result") {
-		if (msg.ok) resolveMotor(msg.id);
-		else rejectMotor(msg.id, new Error(msg.error ?? "Motor command failed"));
-		return;
-	}
-	if (msg.type === "photo_result") {
-		if (msg.error) {
-			rejectPhoto(msg.id, new Error(msg.error));
-			return;
-		}
-		if (!msg.dataUrl) {
-			rejectPhoto(msg.id, new Error("Photo result missing dataUrl"));
-			return;
-		}
-		const parsed = parsePhotoDataUrl(msg.dataUrl);
-		if (!parsed) {
-			rejectPhoto(msg.id, new Error("Invalid photo data URL"));
-			return;
-		}
-		resolvePhoto(msg.id, { dataUrl: msg.dataUrl, mimeType: parsed.mimeType, base64: parsed.base64 });
-		return;
-	}
+	if (robot.handleMessage(msg)) return;
 	if (msg.type === "prompt") await harness.prompt(msg.text);
 	if (msg.type === "abort") await performHarnessAbort("client abort");
 	if (msg.type === "reset_session") await resetHarnessSession("client request");
@@ -347,7 +225,7 @@ const server = createServer(async (req, res) => {
 			logClientMessage(await readRequestJson<ClientLogMsg>(req));
 			res.writeHead(204).end();
 		} catch (error) {
-			console.warn(`client log parse failed: ${error instanceof Error ? error.message : String(error)}`);
+			serverLogger.log(`client log parse failed: ${error instanceof Error ? error.message : String(error)}`);
 			res.writeHead(400).end();
 		}
 		return;
@@ -410,12 +288,11 @@ server.on("upgrade", (req, socket, head) => {
 	target.handleUpgrade(req, socket, head, (ws) => target.emit("connection", ws, req));
 });
 
-wss.on("connection", (ws, req: IncomingMessage) => {
+wss.on("connection", (ws, _req: IncomingMessage) => {
 	clients.add(ws);
-	clientUserAgents.set(ws, req.headers["user-agent"] ?? "unknown");
-	console.log(`[ws] client connected ua=${clientUserAgents.get(ws)}`);
-	selectRobotClient(ws);
-	ws.send(JSON.stringify({ type: "hello", motorLog }));
+	serverLogger.log("ws client connected");
+	robot.handleConnection(ws);
+	ws.send(JSON.stringify({ type: "hello" }));
 	ws.on("message", async (data, isBinary) => {
 		try {
 			if (isBinary) {
@@ -428,17 +305,11 @@ wss.on("connection", (ws, req: IncomingMessage) => {
 		}
 	});
 	ws.on("close", () => {
-		console.log(`[ws] client disconnected ua=${clientUserAgents.get(ws) ?? "unknown"}`);
+		serverLogger.log("ws client disconnected");
 		clients.delete(ws);
-		clientUserAgents.delete(ws);
-		if (robotClient === ws) {
-			robotClient = [...clients].find(isMobileRobotClient) ?? [...clients][0];
-			if (robotClient)
-				console.log(`[robot] selected fallback client ua=${clientUserAgents.get(robotClient) ?? "unknown"}`);
-		}
+		robot.handleDisconnect(ws);
+		robot.selectFallback(clients);
 		ttsService.resolveSpeechForClient(ws);
-		rejectPhotosForClient(ws);
-		rejectMotorsForClient(ws);
 	});
 });
 
@@ -446,4 +317,4 @@ reloadWss.on("connection", () => {
 	// The client reloads when this socket reconnects after the dev supervisor restarts the server.
 });
 
-server.listen(port, "0.0.0.0", () => console.log(`robot demo: http://localhost:${port}`));
+server.listen(port, "0.0.0.0", () => serverLogger.log(`robot demo: http://localhost:${port}`));

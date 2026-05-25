@@ -1,19 +1,11 @@
 export type MotorCommand = "forward" | "turn_left" | "turn_left_degrees" | "stop";
 
-export interface PhotoCapture {
-	dataUrl: string;
-	mimeType: string;
-	base64: string;
-}
-
 export type ClientLogLevel = "log" | "info" | "warn" | "error" | "debug" | "app";
 
 export interface ClientLogMsg {
 	type: "client_log";
 	level: ClientLogLevel;
 	message: string;
-	url: string;
-	userAgent: string;
 	time: number;
 }
 
@@ -31,11 +23,50 @@ export type AgentEvent =
 
 export type SttEventName = "loading" | "ready" | "speech_start" | "speech_end" | "speech_drop" | "error";
 
+export interface RobotRpcMap {
+	take_photo_request: {
+		request: Record<string, never>;
+		response: { dataUrl: string };
+	};
+	motor_request: {
+		request: { command: MotorCommand; durationMs: number; degrees?: number };
+		response: { ok: true } | { ok: false; error: string };
+	};
+}
+
+export type RobotRpcType = keyof RobotRpcMap;
+
+export type RobotExecuteRequest<T extends RobotRpcType = RobotRpcType> = {
+	[K in RobotRpcType]: {
+		type: K;
+		payload: RobotRpcMap[K]["request"];
+		timeoutMs?: number;
+	};
+}[T];
+
+export type RobotWireRequest<T extends RobotRpcType = RobotRpcType> = {
+	[K in RobotRpcType]: {
+		type: "robot_request";
+		id: string;
+		request: {
+			type: K;
+			payload: RobotRpcMap[K]["request"];
+		};
+	};
+}[T];
+
+export type RobotWireResponse<T extends RobotRpcType = RobotRpcType> = {
+	[K in RobotRpcType]: {
+		type: "robot_response";
+		id: string;
+		requestType: K;
+		payload?: RobotRpcMap[K]["response"];
+		error?: string;
+	};
+}[T];
+
 export type ServerMessage =
-	| { type: "hello"; motorLog: Array<{ t: number; command: string; durationMs: number }> }
-	| { type: "sim_motor"; command: string; durationMs: number }
-	| { type: "take_photo_request"; id: string }
-	| { type: "motor_request"; id: string; command: MotorCommand; durationMs: number; degrees?: number }
+	| { type: "hello" }
 	| { type: "error"; message: string }
 	| { type: "speak_request"; id: string; text: string }
 	| { type: "cancel_speech"; reason: string; sttIndex?: number }
@@ -43,14 +74,14 @@ export type ServerMessage =
 	| { type: "stt_interim"; index: number; text: string }
 	| { type: "stt_final"; index: number; text: string; accepted: boolean; ignoredReason?: string }
 	| { type: "session_reset" }
-	| { type: "agent_event"; event: AgentEvent };
+	| { type: "agent_event"; event: AgentEvent }
+	| RobotWireRequest;
 
 export type ClientMessage =
 	| { type: "prompt"; text: string }
-	| { type: "photo_result"; id: string; dataUrl?: string; error?: string }
-	| { type: "motor_result"; id: string; ok: boolean; error?: string }
 	| { type: "speak_done"; id: string }
 	| { type: "speak_cancelled"; id: string }
 	| ClientLogMsg
 	| { type: "abort" }
-	| { type: "reset_session" };
+	| { type: "reset_session" }
+	| RobotWireResponse;

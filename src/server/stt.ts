@@ -1,7 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { logStreamLines } from "./log-stream.js";
+import type { Logger } from "./logger.js";
 
 export interface SttServiceDeps {
 	workerPath: string;
+	logger: Logger;
 	broadcast: (data: object) => void;
 	enqueuePrompt: (text: string) => void;
 	performAbort: (reason: string, sttIndex?: number) => Promise<void>;
@@ -72,26 +75,28 @@ export function createSttService(deps: SttServiceDeps): SttService {
 	let loadingAnnounced = false;
 	let stdout = "";
 	let stoppedUtteranceIndex: number | undefined;
+	const logger = deps.logger.tag("stt");
 
 	function startWorker(): void {
 		if (process && !process.killed) return;
 		ready = false;
 		loadingAnnounced = false;
 		stdout = "";
-		console.log("[stt] starting Parakeet STT worker via uvx");
+		logger.log("starting Parakeet STT worker via uvx");
 		const child = spawn("uvx", ["--with", "parakeet-mlx", "--with", "silero-vad", "python", deps.workerPath], {
-			stdio: ["pipe", "pipe", "inherit"],
+			stdio: ["pipe", "pipe", "pipe"],
 		});
 		process = child;
 		child.stdout?.on("data", (data: Buffer) => handleStdout(data));
+		logStreamLines(child.stderr, logger);
 		child.once("error", (error) => {
 			deps.broadcast({ type: "stt_event", event: "error", message: error.message });
-			console.error(`[stt] Parakeet worker failed to start: ${error.message}`);
+			logger.log(`Parakeet worker failed to start: ${error.message}`);
 		});
 		child.once("exit", (code, signal) => {
 			if (process === child) process = undefined;
 			ready = false;
-			console.warn(`[stt] Parakeet worker exited code=${code ?? "none"} signal=${signal ?? "none"}`);
+			logger.log(`Parakeet worker exited code=${code ?? "none"} signal=${signal ?? "none"}`);
 		});
 	}
 
@@ -106,8 +111,8 @@ export function createSttService(deps: SttServiceDeps): SttService {
 			try {
 				handleMessage(JSON.parse(line) as SttWorkerMsg);
 			} catch (error) {
-				console.warn(
-					`[stt] failed to parse worker line: ${line}; ${error instanceof Error ? error.message : String(error)}`,
+				logger.log(
+					`failed to parse worker line: ${line}; ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 		}
@@ -116,64 +121,62 @@ export function createSttService(deps: SttServiceDeps): SttService {
 	function handleMessage(message: SttWorkerMsg): void {
 		if (message.type === "ready") {
 			ready = true;
-			console.log(
-				`[stt] Parakeet ready sampleRate=${message.sampleRate} vadChunkMs=${message.vadChunkMs} threshold=${message.vadThreshold} minSilenceMs=${message.minSilenceMs} prerollMs=${message.prerollMs} interimIntervalMs=${message.interimIntervalMs ?? "off"}`,
+			logger.log(
+				`Parakeet ready sampleRate=${message.sampleRate} vadChunkMs=${message.vadChunkMs} threshold=${message.vadThreshold} minSilenceMs=${message.minSilenceMs} prerollMs=${message.prerollMs} interimIntervalMs=${message.interimIntervalMs ?? "off"}`,
 			);
 			deps.broadcast({ type: "stt_event", event: "ready" });
 			return;
 		}
 		if (message.type === "speech_start") {
 			stoppedUtteranceIndex = undefined;
-			console.log(`[stt] speech_start #${message.index}`);
+			logger.log(`speech_start #${message.index}`);
 			deps.broadcast({ type: "stt_event", event: "speech_start", index: message.index });
 			return;
 		}
 		if (message.type === "speech_end") {
-			console.log(`[stt] speech_end #${message.index} duration=${message.duration.toFixed(2)}s`);
+			logger.log(`speech_end #${message.index} duration=${message.duration.toFixed(2)}s`);
 			deps.broadcast({ type: "stt_event", event: "speech_end", index: message.index });
 			return;
 		}
 		if (message.type === "speech_drop") {
-			console.log(
-				`[stt] speech_drop #${message.index} reason=${message.reason} duration=${message.duration.toFixed(2)}s`,
-			);
+			logger.log(`speech_drop #${message.index} reason=${message.reason} duration=${message.duration.toFixed(2)}s`);
 			deps.broadcast({ type: "stt_event", event: "speech_drop", index: message.index });
 			return;
 		}
 		if (message.type === "interim") {
 			const text = message.text.trim();
-			console.log(
-				`[stt] interim #${message.index} audioMs=${message.audioMs} decodeMs=${message.decodeMs} text=${JSON.stringify(text)}`,
+			logger.log(
+				`interim #${message.index} audioMs=${message.audioMs} decodeMs=${message.decodeMs} text=${JSON.stringify(text)}`,
 			);
 			deps.broadcast({ type: "stt_interim", index: message.index, text });
 			if (text && looksLikeStopCommand(text) && stoppedUtteranceIndex !== message.index) {
 				stoppedUtteranceIndex = message.index;
-				console.log("[stt] stop-word detected in interim, aborting current turn");
+				logger.log("stop-word detected in interim, aborting current turn");
 				void deps.performAbort(`interim stop word: ${text}`, message.index);
 			}
 			return;
 		}
 		if (message.type === "final") {
 			const text = message.text.trim();
-			console.log(`[stt] final #${message.index} decodeMs=${message.decodeMs} text=${JSON.stringify(text)}`);
+			logger.log(`final #${message.index} decodeMs=${message.decodeMs} text=${JSON.stringify(text)}`);
 			if (!text) {
 				deps.broadcast({ type: "stt_final", index: message.index, text, accepted: false, ignoredReason: "empty" });
 				return;
 			}
 			if (stoppedUtteranceIndex === message.index) {
-				console.log(`[stt] ignoring final #${message.index}; utterance already handled as stop`);
+				logger.log(`ignoring final #${message.index}; utterance already handled as stop`);
 				deps.broadcast({ type: "stt_final", index: message.index, text, accepted: false, ignoredReason: "stop" });
 				return;
 			}
 			if (looksLikeStopCommand(text)) {
 				stoppedUtteranceIndex = message.index;
-				console.log("[stt] stop-word detected in final, aborting current turn");
+				logger.log("stop-word detected in final, aborting current turn");
 				deps.broadcast({ type: "stt_final", index: message.index, text, accepted: false, ignoredReason: "stop" });
 				void deps.performAbort(`stop word: ${text}`, message.index);
 				return;
 			}
 			if (deps.shouldIgnoreNonStopFinal()) {
-				console.log(`[stt] ignoring non-stop final during/recently-after TTS: ${JSON.stringify(text)}`);
+				logger.log(`ignoring non-stop final during/recently-after TTS: ${JSON.stringify(text)}`);
 				deps.broadcast({
 					type: "stt_final",
 					index: message.index,
@@ -187,7 +190,7 @@ export function createSttService(deps: SttServiceDeps): SttService {
 			deps.enqueuePrompt(text);
 			return;
 		}
-		console.warn(`[stt] worker error: ${message.message}`);
+		logger.log(`worker error: ${message.message}`);
 		deps.broadcast({ type: "stt_event", event: "error", message: message.message });
 	}
 

@@ -1,4 +1,4 @@
-import type { AgentMessageLike, MotorCommand, ServerMessage } from "../types.js";
+import type { AgentMessageLike, MotorCommand, RobotRpcMap, RobotWireRequest, ServerMessage } from "../types.js";
 
 type ConversationPhase = "idle" | "listening" | "thinking" | "speaking";
 type RobotFaceState = "idle" | "listening" | "hearing" | "thinking" | "speaking" | "tool" | "error";
@@ -95,8 +95,6 @@ function sendClientLog(level: "log" | "info" | "warn" | "error" | "debug" | "app
 		type: "client_log",
 		level,
 		message: message.slice(0, 4000),
-		url: location.href,
-		userAgent: navigator.userAgent,
 		time: Date.now(),
 	};
 	const body = JSON.stringify(payload);
@@ -507,7 +505,7 @@ function chooseTurnDirection(
 
 async function pulseTurnFallback(untilMs: number, generation: number, reason: string): Promise<void> {
 	const startedAt = Date.now();
-	log(`gyro fallback timed pulse turn: ${reason}`, "sim");
+	log(`gyro fallback timed pulse turn: ${reason}`, "robot");
 	while (generation === motorGeneration && Date.now() - startedAt < untilMs) {
 		await pulseTurnLeft(Math.min(180, Math.max(40, untilMs - (Date.now() - startedAt))));
 		await delay(120);
@@ -544,7 +542,7 @@ async function turnLeftByDegrees(degrees: number, maxDurationMs: number, generat
 			turned = turnProgressDegrees(startHeading, heading, direction);
 			log(
 				`gyro pulse target=${targetDegrees.toFixed(1)}° turned≈${turned.toFixed(1)}° heading=${heading.toFixed(1)}° dir=${direction} fresh=${orientationSampleCount > sampleBeforePulse}`,
-				"sim",
+				"robot",
 			);
 			if (turned >= targetDegrees || missedFreshSamples >= 3) break;
 		}
@@ -560,33 +558,36 @@ async function turnLeftByDegrees(degrees: number, maxDurationMs: number, generat
 		await stopMotorPins();
 	}
 	if (generation !== motorGeneration) throw new Error("Degree turn aborted");
-	log(`gyro turn_left_degrees target=${targetDegrees.toFixed(1)}° actual≈${turned.toFixed(1)}°`, "sim");
+	log(`gyro turn_left_degrees target=${targetDegrees.toFixed(1)}° actual≈${turned.toFixed(1)}°`, "robot");
 }
 
-async function handleMotorRequest(
-	id: string,
-	command: MotorCommand,
-	durationMs: number,
-	degrees?: number,
-): Promise<void> {
+type MotorRequestPayload = RobotRpcMap["motor_request"]["request"];
+
+async function handleMotorRequest(id: string, payload: MotorRequestPayload): Promise<void> {
+	const { command, durationMs, degrees } = payload;
 	const generation = ++motorGeneration;
 	if (motorStopTimer) {
 		clearTimeout(motorStopTimer);
 		motorStopTimer = undefined;
 	}
 	if (!ftConnected) {
-		send({ type: "motor_result", id, ok: false, error: "FT232H not connected" });
+		send({
+			type: "robot_response",
+			id,
+			requestType: "motor_request",
+			payload: { ok: false, error: "FT232H not connected" },
+		});
 		return;
 	}
 	try {
 		if (command === "turn_left_degrees") {
 			await turnLeftByDegrees(Number(degrees ?? 45), durationMs, generation);
-			send({ type: "motor_result", id, ok: true });
+			send({ type: "robot_response", id, requestType: "motor_request", payload: { ok: true } });
 			return;
 		}
 		const pins = motorCommandPins(command);
 		await ftWritePins(pins);
-		log(`motor ${command} pins=0b${pins.toString(2).padStart(8, "0")} duration=${durationMs}ms`, "sim");
+		log(`motor ${command} pins=0b${pins.toString(2).padStart(8, "0")} duration=${durationMs}ms`, "robot");
 		if (durationMs > 0 && pins !== 0) {
 			await new Promise<void>((resolve) => {
 				motorStopTimer = setTimeout(async () => {
@@ -600,11 +601,11 @@ async function handleMotorRequest(
 				}, durationMs);
 			});
 		}
-		send({ type: "motor_result", id, ok: true });
+		send({ type: "robot_response", id, requestType: "motor_request", payload: { ok: true } });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		log(`motor request failed: ${message}`, "agent");
-		send({ type: "motor_result", id, ok: false, error: message });
+		send({ type: "robot_response", id, requestType: "motor_request", payload: { ok: false, error: message } });
 		try {
 			await stopMotorPins();
 		} catch {
@@ -625,12 +626,23 @@ window.addEventListener("beforeunload", () => {
 async function handlePhotoRequest(id: string): Promise<void> {
 	try {
 		const dataUrl = await capturePhotoDataUrl();
-		send({ type: "photo_result", id, dataUrl });
+		send({ type: "robot_response", id, requestType: "take_photo_request", payload: { dataUrl } });
 		log(`Captured photo for tool request ${id} (${dataUrl.length} chars)`, "agent");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		send({ type: "photo_result", id, error: message });
+		send({ type: "robot_response", id, requestType: "take_photo_request", error: message });
 		log(`Photo capture failed: ${message}`, "agent");
+	}
+}
+
+async function handleRobotRequest(message: RobotWireRequest): Promise<void> {
+	if (message.request.type === "take_photo_request") {
+		log(`photo requested ${message.id}`, "agent");
+		await handlePhotoRequest(message.id);
+		return;
+	}
+	if (message.request.type === "motor_request") {
+		await handleMotorRequest(message.id, message.request.payload);
 	}
 }
 
@@ -1032,21 +1044,9 @@ ws.onclose = (event) => log(`ws closed code=${event.code} reason=${event.reason 
 ws.onerror = () => log("ws error", "agent");
 ws.onmessage = (event) => {
 	const message = JSON.parse(String(event.data)) as ServerMessage;
-	if (message.type === "sim_motor") {
-		log(`MOTOR ${message.command} ${message.durationMs}ms`, "sim");
-		if (message.command === "stop") {
-			toolActiveUntil = 0;
-			renderRobotFace();
-		} else {
-			showToolFor(message.durationMs);
-		}
-	}
-	if (message.type === "take_photo_request") {
-		log(`photo requested ${message.id}`, "agent");
-		void handlePhotoRequest(message.id);
-	}
-	if (message.type === "motor_request") {
-		void handleMotorRequest(message.id, message.command, message.durationMs, message.degrees);
+
+	if (message.type === "robot_request") {
+		void handleRobotRequest(message);
 	}
 	if (message.type === "error") {
 		showErrorFor(1500);
@@ -1071,7 +1071,6 @@ ws.onmessage = (event) => {
 		}
 		if (message.event === "speech_end") {
 			setSttSpeechActive(false, index);
-			if (!ignored) setPhase("thinking");
 			log("STT speech ended, transcribing", "stt");
 		}
 		if (message.event === "speech_drop") {
@@ -1099,7 +1098,8 @@ ws.onmessage = (event) => {
 		);
 		setSttSpeechActive(false, message.index);
 		if (message.index === ignoredSttIndex) ignoredSttIndex = undefined;
-		if (!message.accepted) resetToListeningOrIdle();
+		if (message.accepted) setPhase("thinking");
+		else resetToListeningOrIdle();
 	}
 	if (message.type === "agent_event") {
 		const agentEvent = message.event;

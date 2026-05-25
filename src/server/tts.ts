@@ -4,14 +4,16 @@ import type { ServerResponse } from "node:http";
 import { createConnection } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { WebSocket } from "ws";
+import { logStreamLines } from "./log-stream.js";
+import type { Logger } from "./logger.js";
 
 type TtsProvider = "elevenlabs" | "pocket";
 
 type ServerToClientMsg = { type: "cancel_speech"; reason: string; sttIndex?: number };
 
 export interface TtsServiceDeps {
+	logger: Logger;
 	getRobotClient: () => WebSocket | undefined;
-	getClientUserAgent: (client: WebSocket) => string | undefined;
 }
 
 export interface TtsService {
@@ -42,6 +44,7 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 	let pocketTtsStartPromise: Promise<void> | undefined;
 	let pocketTtsLastError: Error | undefined;
 	let lastSpeechResolvedAt = 0;
+	const logger = deps.logger.tag("tts");
 
 	function sendToClient(client: WebSocket | undefined, data: ServerToClientMsg): void {
 		if (!client || client.readyState !== WebSocket.OPEN) return;
@@ -80,8 +83,8 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 	function startPocketTtsProcess(): void {
 		if (pocketTtsProcess && !pocketTtsProcess.killed) return;
 		pocketTtsLastError = undefined;
-		console.log(
-			`[tts] starting Pocket TTS: uvx pocket-tts serve --language ${pocketTtsLanguage} --host ${pocketTtsBindHost} --port ${pocketTtsPort}`,
+		logger.log(
+			`starting Pocket TTS: uvx pocket-tts serve --language ${pocketTtsLanguage} --host ${pocketTtsBindHost} --port ${pocketTtsPort}`,
 		);
 		const child = spawn(
 			"uvx",
@@ -95,16 +98,18 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 				"--port",
 				String(pocketTtsPort),
 			],
-			{ stdio: ["ignore", "inherit", "inherit"] },
+			{ stdio: ["ignore", "pipe", "pipe"] },
 		);
 		pocketTtsProcess = child;
+		logStreamLines(child.stdout, logger.tag("pocket"));
+		logStreamLines(child.stderr, logger.tag("pocket"));
 		child.once("error", (error) => {
 			pocketTtsLastError = error;
-			console.error(`[tts] Pocket TTS failed to start: ${error.message}`);
+			logger.log(`Pocket TTS failed to start: ${error.message}`);
 		});
 		child.once("exit", (code, signal) => {
 			if (pocketTtsProcess === child) pocketTtsProcess = undefined;
-			if (code !== 0) console.warn(`[tts] Pocket TTS exited code=${code ?? "none"} signal=${signal ?? "none"}`);
+			if (code !== 0) logger.log(`Pocket TTS exited code=${code ?? "none"} signal=${signal ?? "none"}`);
 		});
 	}
 
@@ -116,7 +121,7 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 			while (Date.now() < deadline) {
 				if (pocketTtsLastError) throw pocketTtsLastError;
 				if (await canConnectToPocketTts()) {
-					console.log(`[tts] Pocket TTS ready at ${pocketTtsUrl}`);
+					logger.log(`Pocket TTS ready at ${pocketTtsUrl}`);
 					return;
 				}
 				await sleep(500);
@@ -146,9 +151,7 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 			const voice = data.voices?.find((entry) => entry.name === elevenLabsVoiceName);
 			return voice?.voice_id ?? elevenLabsVoiceId;
 		} catch (error) {
-			console.warn(
-				`[tts] ElevenLabs voice lookup failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			logger.log(`ElevenLabs voice lookup failed: ${error instanceof Error ? error.message : String(error)}`);
 			return elevenLabsVoiceId;
 		}
 	}
@@ -223,7 +226,7 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 	function resolveSpeech(id: string): void {
 		const pending = pendingSpeech.get(id);
 		if (!pending) return;
-		console.log(`[tts] speech resolved id=${id}`);
+		logger.log(`speech resolved id=${id}`);
 		lastSpeechResolvedAt = Date.now();
 		clearTimeout(pending.timeout);
 		pendingSpeech.delete(id);
@@ -243,15 +246,13 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 	async function speakOnClient(text: string): Promise<void> {
 		const client = deps.getRobotClient();
 		if (!client || client.readyState !== WebSocket.OPEN) {
-			console.warn("[tts] no robot client connected for speech");
+			logger.log("no robot client connected for speech");
 			return;
 		}
 		const trimmed = text.trim();
 		if (!trimmed) return;
 		const id = randomUUID();
-		console.log(
-			`[tts] speak_request id=${id} chars=${trimmed.length} ua=${deps.getClientUserAgent(client) ?? "unknown"}`,
-		);
+		logger.log(`speak_request id=${id} chars=${trimmed.length}`);
 		client.send(JSON.stringify({ type: "speak_request", id, text: trimmed }));
 		await new Promise<void>((resolve) => {
 			const timeout = setTimeout(() => resolveSpeech(id), 30000);

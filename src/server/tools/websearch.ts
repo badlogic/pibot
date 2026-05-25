@@ -1,11 +1,15 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import { Readability } from "@mozilla/readability";
+import { JSDOM } from "jsdom";
+import TurndownService from "turndown";
+import { gfm } from "turndown-plugin-gfm";
 
 const braveApiKey = process.env.BRAVE_API_KEY;
 
 const webSearchParameters = Type.Object({
 	query: Type.String({ description: "Search query." }),
-	count: Type.Optional(Type.Number({ description: "Number of search results. Defaults to 5, maximum 10." })),
+	count: Type.Optional(Type.Number({ description: "Number of search results. Defaults to 5, maximum 20." })),
 	country: Type.Optional(Type.String({ description: "Two-letter country code. Defaults to DE." })),
 	freshness: Type.Optional(
 		Type.String({ description: "Optional freshness filter: pd, pw, pm, py, or YYYY-MM-DDtoYYYY-MM-DD." }),
@@ -13,7 +17,7 @@ const webSearchParameters = Type.Object({
 });
 
 const pageContentParameters = Type.Object({
-	url: Type.String({ description: "Absolute URL of the page to fetch and summarize/extract." }),
+	url: Type.String({ description: "Absolute URL of the page to fetch and extract as readable markdown." }),
 });
 
 interface BraveSearchResult {
@@ -21,6 +25,7 @@ interface BraveSearchResult {
 	url?: string;
 	description?: string;
 	age?: string;
+	page_age?: string;
 }
 
 interface BraveSearchResponse {
@@ -39,29 +44,22 @@ interface WebSearchResultDetails {
 
 interface PageContentDetails {
 	url: string;
-	contentType: string;
 	chars: number;
-	truncated: boolean;
 }
 
-function htmlToReadableText(html: string): string {
-	return html
-		.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-		.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-		.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/p>/gi, "\n\n")
-		.replace(/<\/h[1-6]>/gi, "\n\n")
-		.replace(/<\/li>/gi, "\n")
-		.replace(/<[^>]+>/g, " ")
-		.replace(/&nbsp;/gi, " ")
-		.replace(/&amp;/gi, "&")
-		.replace(/&lt;/gi, "<")
-		.replace(/&gt;/gi, ">")
-		.replace(/&quot;/gi, '"')
-		.replace(/&#39;/gi, "'")
-		.replace(/\n[ \t]+/g, "\n")
-		.replace(/[ \t]{2,}/g, " ")
+function htmlToMarkdown(html: string): string {
+	const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
+	turndown.use(gfm);
+	turndown.addRule("removeEmptyLinks", {
+		filter: (node) => node.nodeName === "A" && !node.textContent?.trim(),
+		replacement: () => "",
+	});
+	return turndown
+		.turndown(html)
+		.replace(/\[\\?\[\s*\\?\]\]\([^)]*\)/g, "")
+		.replace(/ +/g, " ")
+		.replace(/\s+,/g, ",")
+		.replace(/\s+\./g, ".")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 }
@@ -83,7 +81,7 @@ async function searchWebWithBrave(
 	freshness?: string,
 ): Promise<WebSearchResultDetails> {
 	if (!braveApiKey) throw new Error("BRAVE_API_KEY is not set");
-	const resultCount = Math.max(1, Math.min(10, Math.floor(count)));
+	const resultCount = Math.max(1, Math.min(20, Math.floor(count)));
 	const normalizedCountry = country.trim().toUpperCase().slice(0, 2) || "DE";
 	const url = new URL("https://api.search.brave.com/res/v1/web/search");
 	url.searchParams.set("q", query);
@@ -108,28 +106,44 @@ async function searchWebWithBrave(
 		title: entry.title ?? "Untitled",
 		url: entry.url ?? "",
 		snippet: entry.description ?? "",
-		age: entry.age,
+		age: entry.age ?? entry.page_age,
 	}));
 	return { query, count: resultCount, country: normalizedCountry, freshness, results };
 }
 
 async function fetchPageContent(urlText: string): Promise<{ text: string; details: PageContentDetails }> {
-	const url = new URL(urlText);
-	if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Only http/https URLs are supported");
-	const response = await fetch(url, {
+	const response = await fetch(urlText, {
 		headers: {
-			accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
-			"user-agent": "pibot/0.0 (+https://github.com/badlogic/pibot)",
+			"user-agent":
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+			accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+			"accept-language": "en-US,en;q=0.9",
 		},
+		signal: AbortSignal.timeout(15000),
 	});
-	if (!response.ok) throw new Error(`Page fetch failed: HTTP ${response.status}`);
-	const contentType = response.headers.get("content-type") ?? "unknown";
-	const raw = await response.text();
-	const readable = contentType.includes("html") ? htmlToReadableText(raw) : raw.trim();
-	const maxChars = 12000;
-	const truncated = readable.length > maxChars;
-	const text = truncated ? `${readable.slice(0, maxChars)}\n\n[Content truncated]` : readable;
-	return { text, details: { url: url.toString(), contentType, chars: readable.length, truncated } };
+	if (!response.ok) throw new Error(`Page fetch failed: HTTP ${response.status}: ${response.statusText}`);
+
+	const html = await response.text();
+	const dom = new JSDOM(html, { url: urlText });
+	const article = new Readability(dom.window.document).parse();
+
+	if (article?.content) {
+		const title = article.title ? `# ${article.title}\n\n` : "";
+		const text = `${title}${htmlToMarkdown(article.content)}`.trim();
+		return { text, details: { url: urlText, chars: text.length } };
+	}
+
+	const fallbackDoc = new JSDOM(html, { url: urlText });
+	const body = fallbackDoc.window.document;
+	body.querySelectorAll("script, style, noscript, nav, header, footer, aside").forEach((element) => {
+		element.remove();
+	});
+	const title = body.querySelector("title")?.textContent?.trim();
+	const main = body.querySelector("main, article, [role='main'], .content, #content") ?? body.body;
+	const fallbackHtml = main?.innerHTML ?? "";
+	if (fallbackHtml.trim().length <= 100) throw new Error("Could not extract readable content from this page.");
+	const text = `${title ? `# ${title}\n\n` : ""}${htmlToMarkdown(fallbackHtml)}`.trim();
+	return { text, details: { url: urlText, chars: text.length } };
 }
 
 export const webSearchTool: AgentTool<typeof webSearchParameters, WebSearchResultDetails> = {
@@ -153,7 +167,7 @@ export const webSearchTool: AgentTool<typeof webSearchParameters, WebSearchResul
 export const pageContentTool: AgentTool<typeof pageContentParameters, PageContentDetails> = {
 	name: "fetch_page_content",
 	label: "Fetch Page Content",
-	description: "Fetch readable text content from a specific URL found through web_search or provided by the user.",
+	description: "Fetch readable markdown content from a specific URL found through web_search or provided by the user.",
 	executionMode: "sequential",
 	parameters: pageContentParameters,
 	execute: async (_id, params) => {

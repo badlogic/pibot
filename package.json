@@ -13,13 +13,19 @@
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "file:/Users/badlogic/workspaces/pi/packages/agent",
 		"@earendil-works/pi-ai": "file:/Users/badlogic/workspaces/pi/packages/ai",
+		"@mozilla/readability": "^0.6.0",
+		"jsdom": "^29.1.1",
 		"tsx": "4.22.1",
+		"turndown": "^7.2.4",
+		"turndown-plugin-gfm": "^1.0.2",
 		"typescript": "5.9.3",
 		"ws": "8.18.3"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.5",
+		"@types/jsdom": "^28.0.3",
 		"@types/node": "24.0.0",
+		"@types/turndown": "^5.0.6",
 		"@types/ws": "8.5.13",
 		"concurrently": "9.2.1",
 		"esbuild": "0.28.0",
