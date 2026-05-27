@@ -1,0 +1,11 @@
+[package]
+name = "voice_activity_detector"
+version = "0.2.1-pibot.1"
+edition = "2021"
+publish = false
+
+[dependencies]
+ndarray = "=0.17.2"
+ort = { version = "=2.0.0-rc.12", features = ["ndarray"] }
+thiserror = "=2.0.18"
+typed-builder = "=0.20.1"

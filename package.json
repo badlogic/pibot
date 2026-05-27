@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "node scripts/dev.mjs",
 		"compile:client": "esbuild src/client/index.ts --bundle --format=esm --target=es2022 --outfile=public/app.js",
+		"build:stt-rust": "cargo build --release --manifest-path native/pibot-stt/Cargo.toml",
 		"check": "biome check --write --error-on-warnings . && tsc --noEmit && npm run compile:client",
 		"typecheck": "tsc --noEmit",
 		"prepare": "husky"

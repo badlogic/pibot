@@ -309,12 +309,7 @@ async function startRobot(): Promise<void> {
 					"orientation",
 				),
 			);
-		try {
-			await tools.photo.ensureCameraStream();
-			log("Camera enabled", "camera");
-		} catch (error) {
-			log(`Camera enable failed: ${error instanceof Error ? error.message : String(error)}`, "camera");
-		}
+		log("Camera will open on demand for photos", "camera");
 		await startRecognition();
 		robotStarted = true;
 		setupPanelElement.mode = "started";
@@ -362,7 +357,5 @@ setupPanelElement.addEventListener("reset-session", () => {
 	send({ type: "reset_session" });
 	log("session reset requested", "ui");
 });
-
-tools.photo.startIfPreviouslyEnabled();
 
 setupPanelElement.addEventListener("tts-provider-change", () => tools.speech.handleProviderChange());

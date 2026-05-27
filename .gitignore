@@ -16,6 +16,7 @@ public/app.js
 
 # native build artifacts
 native/pibot-stt/build/
+native/pibot-stt/target/
 models/
 
 # python bytecode

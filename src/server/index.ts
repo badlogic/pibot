@@ -29,7 +29,12 @@ const executionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
 const memoryStore = createFileMemoryStore(executionEnv, { path: serverConfig.memoryFile });
 const robot = new RobotClient();
 const tts = createTtsService({ qwen3WorkerPath: serverConfig.qwen3TtsWorkerPath, logger, onEvent: handleTtsEvent });
-const stt = createSttService({ workerPath: serverConfig.parakeetSttWorkerPath, logger, onEvent: handleSttEvent });
+const stt = createSttService({
+	workerBinaryPath: serverConfig.sttWorkerBinaryPath,
+	modelDir: serverConfig.parakeetTdtModelDir,
+	logger,
+	onEvent: handleSttEvent,
+});
 const harness = await createRobotHarness({
 	env: executionEnv,
 	logger,

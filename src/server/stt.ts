@@ -1,8 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { once } from "node:events";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import type { Logger } from "./logger.js";
 
 export interface SttServiceDeps {
-	workerPath: string;
+	workerBinaryPath: string;
+	modelDir: string;
 	logger: Logger;
 	onEvent: (event: SttEvent) => void;
 }
@@ -28,6 +33,9 @@ export type SttEvent =
 	| { type: "interim"; index: number; text: string; audioMs: number; decodeMs: number }
 	| { type: "final"; index: number; text: string; decodeMs: number }
 	| { type: "error"; message: string };
+
+const PARAKEET_TDT_REPO = "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main";
+const PARAKEET_TDT_FILES = ["encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"] as const;
 
 type SttWorkerMsg =
 	| {
@@ -68,26 +76,88 @@ function streamLines(stream: NodeJS.ReadableStream | null | undefined, onLine: (
 }
 
 export function createSttService(deps: SttServiceDeps): SttService {
-	let process: ChildProcess | undefined;
+	let childProcess: ChildProcess | undefined;
 	let stdout = "";
 	const logger = deps.logger.tag("stt");
 	const emit = deps.onEvent;
 
 	function startWorker(): void {
-		if (process && !process.killed) return;
+		void startWorkerAsync().catch((error) => {
+			emit({ type: "error", message: error instanceof Error ? error.message : String(error) });
+		});
+	}
+
+	async function startWorkerAsync(): Promise<void> {
+		if (childProcess && !childProcess.killed) return;
 		stdout = "";
-		logger.log("loading Parakeet/Silero worker");
-		const child = spawn("uvx", ["--with", "parakeet-mlx", "--with", "silero-vad", "python", deps.workerPath], {
+		const command = workerCommand();
+		await ensureModelFiles();
+		logger.log("loading Rust Parakeet/Silero worker");
+		const child = spawn(command.file, command.args, {
+			env: { ...process.env, PARAKEET_TDT_MODEL_DIR: deps.modelDir },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
-		process = child;
+		childProcess = child;
 		child.stdout?.on("data", (data: Buffer) => handleStdout(data));
 		streamLines(child.stderr, (line) => logger.log(line));
 		child.once("error", (error) => emit({ type: "error", message: error.message }));
 		child.once("exit", (code, signal) => {
-			if (process === child) process = undefined;
-			logger.log(`Parakeet worker exited code=${code ?? "none"} signal=${signal ?? "none"}`);
+			if (childProcess === child) childProcess = undefined;
+			logger.log(`Rust Parakeet worker exited code=${code ?? "none"} signal=${signal ?? "none"}`);
 		});
+	}
+
+	function workerCommand(): { file: string; args: string[] } {
+		if (!existsSync(deps.workerBinaryPath)) {
+			throw new Error(`Rust STT worker binary missing: ${deps.workerBinaryPath}. Run npm run build:stt-rust.`);
+		}
+		return { file: deps.workerBinaryPath, args: [deps.modelDir] };
+	}
+
+	async function ensureModelFiles(): Promise<void> {
+		await mkdir(deps.modelDir, { recursive: true });
+		for (const file of PARAKEET_TDT_FILES) {
+			const path = join(deps.modelDir, file);
+			if (await hasUsableFile(path)) continue;
+			await downloadModelFile(file, path);
+		}
+	}
+
+	async function hasUsableFile(path: string): Promise<boolean> {
+		try {
+			return (await stat(path)).size > 0;
+		} catch {
+			return false;
+		}
+	}
+
+	async function downloadModelFile(file: string, path: string): Promise<void> {
+		const tmpPath = `${path}.tmp-${process.pid}`;
+		await unlink(tmpPath).catch(() => undefined);
+		logger.log(`downloading STT model file ${file}`);
+		const response = await fetch(`${PARAKEET_TDT_REPO}/${file}`);
+		if (!response.ok || !response.body) throw new Error(`failed to download ${file}: HTTP ${response.status}`);
+		const total = Number(response.headers.get("content-length") ?? "0");
+		const reader = response.body.getReader();
+		const output = createWriteStream(tmpPath, { flags: "wx" });
+		let received = 0;
+		try {
+			while (true) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				received += chunk.value.byteLength;
+				if (!output.write(chunk.value)) await once(output, "drain");
+			}
+			output.end();
+			await once(output, "finish");
+			await rename(tmpPath, path);
+			const suffix = total > 0 ? ` / ${(total / 1024 / 1024).toFixed(1)} MiB` : "";
+			logger.log(`downloaded ${file} (${(received / 1024 / 1024).toFixed(1)} MiB${suffix})`);
+		} catch (error) {
+			output.destroy();
+			await unlink(tmpPath).catch(() => undefined);
+			throw error;
+		}
 	}
 
 	function handleStdout(data: Buffer): void {
@@ -151,15 +221,15 @@ export function createSttService(deps: SttServiceDeps): SttService {
 	}
 
 	function handleAudioFrame(data: Buffer): void {
-		if (!process?.stdin || process.stdin.destroyed) return;
+		if (!childProcess?.stdin || childProcess.stdin.destroyed) return;
 		const header = Buffer.allocUnsafe(4);
 		header.writeUInt32LE(data.byteLength, 0);
-		process.stdin.write(header);
-		process.stdin.write(data);
+		childProcess.stdin.write(header);
+		childProcess.stdin.write(data);
 	}
 
 	function stopChildProcess(): void {
-		process?.kill();
+		childProcess?.kill();
 	}
 
 	startWorker();

@@ -1,0 +1,10 @@
+[package]
+name = "pibot-stt-worker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+parakeet-rs = { version = "=0.3.5", default-features = true }
+serde_json = "=1.0.150"
+voice_activity_detector = { path = "vendor/voice_activity_detector" }
