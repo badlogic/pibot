@@ -145,10 +145,15 @@ robot-log {
 	transition: filter 220ms ease, transform 160ms ease;
 }
 
-.setup-face {
+.setup-face-host {
+	display: flex;
+	justify-content: center;
+	margin: 0.5rem 0 2rem;
+}
+
+.face.in-setup {
 	width: min(720px, 100%);
 	max-height: none;
-	margin: 0.5rem auto 2rem;
 }
 
 .eye {
@@ -227,34 +232,42 @@ robot-log {
 	animation: inactive-brow-drift 9.2s ease-in-out infinite -2.5s;
 }
 
+.face.listening {
+	animation: listening-breathe 3.8s ease-in-out infinite;
+}
+
 .face.listening .eye {
-	animation: attentive-blink 4s infinite;
-	--look-x: 2%;
-	--look-y: 0%;
+	animation: attentive-blink 4s infinite, listening-glow 2.4s ease-in-out infinite;
 }
 
 .face.listening .brow.left {
 	transform: rotate(-2deg);
+	animation: listening-brow-left 4.2s ease-in-out infinite;
 }
 
 .face.listening .brow.right {
 	transform: rotate(2deg);
+	animation: listening-brow-right 4.2s ease-in-out infinite;
+}
+
+.face.hearing {
+	animation: hearing-bob 900ms ease-in-out infinite;
 }
 
 .face.hearing .eye {
-	animation: none;
-	--eye-scale-x: 1.12;
-	--eye-scale-y: 1.12;
+	animation: hearing-pulse 720ms ease-in-out infinite alternate;
 }
 
 .face.hearing .brow.left {
 	top: 21%;
 	transform: rotate(8deg);
+	animation: hearing-brow-left 900ms ease-in-out infinite alternate;
 }
 
 .face.hearing .brow.right {
 	top: 21%;
 	transform: rotate(-8deg);
+	animation: hearing-brow-right 900ms ease-in-out infinite alternate;
 }
 
 .face.thinking {
@@ -266,6 +279,7 @@ robot-log {
 	--face-glow-amp: rgba(150, 120, 255, 0.55);
 	--brow-mid: #d8c7ff;
 	--brow-glow: rgba(190, 170, 255, 0.5);
+	animation: thinking-sway 4.4s ease-in-out infinite;
 }
 
 .face.thinking .eye {
@@ -280,11 +294,13 @@ robot-log {
 .face.thinking .brow.left {
 	top: 18%;
 	transform: rotate(-22deg);
+	animation: thinking-brow-left 3.2s ease-in-out infinite;
 }
 
 .face.thinking .brow.right {
 	top: 22%;
 	transform: rotate(-4deg);
+	animation: thinking-brow-right 3.6s ease-in-out infinite;
 }
 
 .face.speaking {
@@ -333,7 +349,7 @@ robot-log {
 }
 
 .face.tool .eye {
-	animation: none;
+	animation: tool-scan 1.6s ease-in-out infinite;
 	--eye-scale-x: 1.06;
 	--eye-scale-y: 0.82;
 }
@@ -475,6 +491,129 @@ robot-log {
 	}
 	to {
 		transform: rotate(2.5deg) translateX(1.5%);
+	}
+}
+
+@keyframes listening-breathe {
+	0%,
+	100% {
+		transform: scale(1);
+	}
+	50% {
+		transform: scale(1.015);
+	}
+}
+
+@keyframes listening-glow {
+	0%,
+	100% {
+		box-shadow:
+			0 0 28px var(--eye-glow),
+			0 0 68px var(--eye-glow-soft),
+			inset 0 -14px 24px var(--eye-inset);
+	}
+	50% {
+		box-shadow:
+			0 0 38px var(--eye-glow),
+			0 0 92px var(--eye-glow-soft),
+			inset 0 -14px 24px var(--eye-inset);
+	}
+}
+
+@keyframes listening-brow-left {
+	0%,
+	100% {
+		transform: rotate(-2deg) translateY(0);
+	}
+	50% {
+		transform: rotate(-4deg) translateY(-6%);
+	}
+}
+
+@keyframes listening-brow-right {
+	0%,
+	100% {
+		transform: rotate(2deg) translateY(0);
+	}
+	50% {
+		transform: rotate(4deg) translateY(-6%);
+	}
+}
+
+@keyframes hearing-bob {
+	0%,
+	100% {
+		transform: translateY(0);
+	}
+	50% {
+		transform: translateY(-1.2%);
+	}
+}
+
+@keyframes hearing-pulse {
+	from {
+		transform: scale(calc(var(--eye-scale-x) * 1.04), calc(var(--eye-scale-y) * 1.04));
+	}
+	to {
+		transform: scale(calc(var(--eye-scale-x) * 1.18), calc(var(--eye-scale-y) * 1.18));
+	}
+}
+
+@keyframes hearing-brow-left {
+	from {
+		transform: rotate(8deg) translateY(0);
+	}
+	to {
+		transform: rotate(12deg) translateY(-6%);
+	}
+}
+
+@keyframes hearing-brow-right {
+	from {
+		transform: rotate(-8deg) translateY(0);
+	}
+	to {
+		transform: rotate(-12deg) translateY(-6%);
+	}
+}
+
+@keyframes thinking-sway {
+	0%,
+	100% {
+		transform: rotate(-1.2deg);
+	}
+	50% {
+		transform: rotate(1.2deg);
+	}
+}
+
+@keyframes thinking-brow-left {
+	0%,
+	100% {
+		transform: rotate(-22deg) translateY(0);
+	}
+	50% {
+		transform: rotate(-18deg) translateY(-4%);
+	}
+}
+
+@keyframes thinking-brow-right {
+	0%,
+	100% {
+		transform: rotate(-4deg) translateY(0);
+	}
+	50% {
+		transform: rotate(-1deg) translateY(-3%);
+	}
+}
+
+@keyframes tool-scan {
+	0%,
+	100% {
+		translate: -3% 0;
+	}
+	50% {
+		translate: 3% 0;
 	}
 }
 

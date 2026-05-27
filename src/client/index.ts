@@ -5,6 +5,7 @@ import "./components/robot-log.js";
 import type { RobotLogElement } from "./components/robot-log.js";
 import "./components/setup-panel.js";
 import type { RobotSetupPanelElement } from "./components/setup-panel.js";
+
 import { BrowserClientLogger } from "./logger.js";
 import { RobotServer } from "./robot-server.js";
 import { createRobotTools } from "./tools/index.js";
@@ -14,11 +15,11 @@ const setup = document.querySelector<HTMLElement>("#setup");
 const robot = document.querySelector<HTMLElement>("#robot");
 const logEl = document.querySelector<RobotLogElement>("#log");
 const face = document.querySelector<RobotFaceElement>("#face");
-const setupFace = document.querySelector<RobotFaceElement>("#setupFace");
+const setupFaceHost = document.querySelector<HTMLElement>("#setupFaceHost");
 const setupPanel = document.querySelector<RobotSetupPanelElement>("#setupPanel");
 const backButton = document.querySelector<HTMLButtonElement>("#back");
 
-if (!setup || !robot || !logEl || !face || !setupFace || !setupPanel || !backButton) {
+if (!setup || !robot || !logEl || !face || !setupFaceHost || !setupPanel || !backButton) {
 	throw new Error("Missing required DOM elements");
 }
 
@@ -27,7 +28,21 @@ const robotFace = face;
 const setupPanelElement = setupPanel;
 const setupSection = setup;
 const robotSection = robot;
-const robotFaces = [setupFace, robotFace];
+const setupFaceHostElement = setupFaceHost;
+
+function moveFaceToSetup(): void {
+	if (robotFace.parentElement === setupFaceHostElement) return;
+	robotFace.classList.add("in-setup");
+	setupFaceHostElement.append(robotFace);
+}
+
+function moveFaceToRobotMode(): void {
+	if (robotFace.parentElement === robotSection) return;
+	robotFace.classList.remove("in-setup");
+	robotSection.prepend(robotFace);
+}
+
+moveFaceToSetup();
 const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
 const targetSttSampleRate = 16000;
 const clientLogger = new BrowserClientLogger();
@@ -81,7 +96,7 @@ function renderRobotFace(): void {
 	const next = deriveRobotFaceState();
 	if (next === currentFaceState) return;
 	currentFaceState = next;
-	for (const faceElement of robotFaces) faceElement.state = next;
+	robotFace.state = next;
 }
 
 function showErrorFor(durationMs: number): void {
@@ -265,6 +280,7 @@ void pollReloadVersion();
 setInterval(() => void pollReloadVersion(), 2000);
 
 async function enterRobotMode(): Promise<void> {
+	moveFaceToRobotMode();
 	setupSection.hidden = true;
 	robotSection.hidden = false;
 	try {
@@ -315,6 +331,7 @@ setupPanelElement.addEventListener("start-robot", () => void startRobot());
 backButton.onclick = async () => {
 	robot.hidden = true;
 	setup.hidden = false;
+	moveFaceToSetup();
 	reloadIfPending();
 	try {
 		if (document.fullscreenElement) await document.exitFullscreen();
@@ -327,6 +344,7 @@ document.addEventListener("fullscreenchange", () => {
 	if (!document.fullscreenElement && !robot.hidden) {
 		robot.hidden = true;
 		setup.hidden = false;
+		moveFaceToSetup();
 		reloadIfPending();
 	}
 });
