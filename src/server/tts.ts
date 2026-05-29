@@ -249,9 +249,7 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 	function pushText(text: string): void {
 		const trimmed = text.trim();
 		if (!callbacks || !trimmed) return;
-		const pending = queue[queue.length - 1];
-		if (activeRequestId !== undefined && pending) pending.text = `${pending.text} ${trimmed}`;
-		else queue.push({ id: nextRequestId++, text: trimmed });
+		queue.push({ id: nextRequestId++, text: trimmed });
 		pump();
 	}
 

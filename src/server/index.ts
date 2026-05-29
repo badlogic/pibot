@@ -233,7 +233,7 @@ function handleAssistantTextDelta(text: string): void {
 async function handleHarnessEvent(event: RobotHarnessEvent): Promise<void> {
 	if (event.type === "assistant_start") {
 		activeAssistantText = "";
-		activeChunker = createSentenceChunker({ sentencesPerChunk: 3, firstChunkSentences: 1 });
+		activeChunker = createSentenceChunker({ sentencesPerChunk: 1 });
 		ttsStartedForTurn = false;
 		setRobotState({ phase: "thinking", assistantText: "" });
 	}
