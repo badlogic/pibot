@@ -88,6 +88,21 @@ function parseWorkerKind(value: string): TtsWorkerKind {
 	throw new Error(`QWEN3_TTS_WORKER must be python or rust, got ${value}`);
 }
 
+function shouldLogQwen3Line(line: string): boolean {
+	if (line.startsWith("{")) return true;
+	if (/^(ready|cancel:|error|failed|traceback)/i.test(line)) return true;
+	if (
+		/^(ICL voice clone|Reference text:|Synthesis text:|Reference codec frames:|ref_text tokens:|Building ICL|Built ICL|Generating audio codes|Generated \d+ code frames|Streaming decode|Streaming codes tensor shape:|Streaming vocoder output shape:|EOS detected)/.test(
+			line,
+		)
+	) {
+		return false;
+	}
+	if (/^(Loaded|Loading|Found |Audio encoder input:|After |Before |Encoded codes:|Encoded \d+ frames)/.test(line))
+		return false;
+	return true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
@@ -337,7 +352,10 @@ export function createTtsService(deps: TtsServiceDeps): TtsService {
 		worker = child;
 		child.stdout?.on("data", (chunk: Buffer) => handleStdoutData(chunk));
 		child.stderr?.on("data", (chunk: Buffer) => {
-			for (const line of chunk.toString("utf8").split(/\r?\n/)) if (line.trim()) qwen3Logger.log(line.trim());
+			for (const line of chunk.toString("utf8").split(/\r?\n/)) {
+				const trimmed = line.trim();
+				if (trimmed && shouldLogQwen3Line(trimmed)) qwen3Logger.log(trimmed);
+			}
 		});
 		child.once("error", (error) => {
 			rejectReady?.(error);

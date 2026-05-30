@@ -335,17 +335,20 @@ export function createSpeechTool(deps: {
 		analyser.fftSize = 512;
 		analyser.smoothingTimeConstant = 0.55;
 		const playbackTap = context.createScriptProcessor(1024, 1, 1);
+		const silentTapOutput = context.createGain();
+		silentTapOutput.gain.value = 0;
 		playbackTap.onaudioprocess = (event) => {
 			const input = event.inputBuffer.getChannelData(0);
 			deps.onPlaybackAudio(input, event.inputBuffer.sampleRate);
-			event.outputBuffer.getChannelData(0).set(input);
 		};
 		highpass.connect(lowpass);
 		lowpass.connect(presence);
 		presence.connect(compressor);
 		compressor.connect(output);
+		output.connect(context.destination);
 		output.connect(playbackTap);
-		playbackTap.connect(context.destination);
+		playbackTap.connect(silentTapOutput);
+		silentTapOutput.connect(context.destination);
 		output.connect(analyser);
 		activePcmStream = {
 			generation: ++ttsGeneration,
@@ -354,7 +357,7 @@ export function createSpeechTool(deps: {
 			pendingSources: 0,
 			doneRequested: false,
 			finishResolve: undefined,
-			nodes: [highpass, lowpass, presence, compressor, output, playbackTap, analyser],
+			nodes: [highpass, lowpass, presence, compressor, output, playbackTap, silentTapOutput, analyser],
 			cleanup: startFaceAmpLoop(analyser),
 		};
 		deps.onSpeakingChange(true);
