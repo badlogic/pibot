@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Pipi AEC Test</title>
+		<style>
+			body {
+				font: 16px system-ui, sans-serif;
+				margin: 2rem;
+				max-width: 52rem;
+				line-height: 1.4;
+			}
+			fieldset {
+				border: 1px solid #ccc;
+				margin: 1rem 0;
+				padding: 1rem;
+			}
+			label {
+				display: block;
+				margin: 0.5rem 0;
+			}
+			button,
+			select,
+			input {
+				font: inherit;
+			}
+			button {
+				margin-right: 0.5rem;
+				padding: 0.5rem 0.75rem;
+			}
+			audio {
+				display: block;
+				width: 100%;
+				margin: 0.75rem 0 1.25rem;
+			}
+			pre {
+				background: #111;
+				color: #eee;
+				padding: 1rem;
+				white-space: pre-wrap;
+			}
+			.take {
+				border-top: 1px solid #ddd;
+				padding-top: 0.75rem;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>Pipi AEC test</h1>
+		<p>
+			Use <strong>Play + record</strong> to test barge-in, or <strong>Record only</strong>
+			to capture a clean mic reference without playback.
+		</p>
+
+		<fieldset>
+			<legend>Capture settings</legend>
+			<label>
+				Echo cancellation
+				<select id="echoCancellation">
+					<option value="true" selected>on</option>
+					<option value="exact">exact on</option>
+					<option value="false">off</option>
+				</select>
+			</label>
+			<label><input id="noiseSuppression" type="checkbox" checked /> Noise suppression</label>
+			<label><input id="autoGainControl" type="checkbox" checked /> Auto gain control</label>
+			<label>
+				Sample rate
+				<select id="sampleRate">
+					<option value="default" selected>browser default</option>
+					<option value="48000">48000</option>
+					<option value="44100">44100</option>
+					<option value="16000">16000</option>
+				</select>
+			</label>
+			<label>
+				Channel count
+				<select id="channelCount">
+					<option value="1" selected>mono</option>
+					<option value="default">browser default</option>
+					<option value="2">stereo</option>
+				</select>
+			</label>
+			<label>
+				Playback volume: <span id="volumeLabel">100%</span>
+				<input id="volume" type="range" min="0" max="1" step="0.01" value="1" />
+			</label>
+		</fieldset>
+
+		<button id="play">Play + record</button>
+		<button id="recordOnly">Record only</button>
+		<button id="stop" disabled>Stop</button>
+
+		<h2>Playback source</h2>
+		<audio id="source" src="/elevenlabs-pibot-reference-de.mp3" controls preload="auto"></audio>
+
+		<h2>Takes</h2>
+		<div id="takes"></div>
+
+		<h2>Log</h2>
+		<pre id="log"></pre>
+
+		<script type="module">
+			const playButton = document.querySelector("#play");
+			const recordOnlyButton = document.querySelector("#recordOnly");
+			const stopButton = document.querySelector("#stop");
+			const sourceAudio = document.querySelector("#source");
+			const takesElement = document.querySelector("#takes");
+			const logElement = document.querySelector("#log");
+			const echoCancellationElement = document.querySelector("#echoCancellation");
+			const noiseSuppressionElement = document.querySelector("#noiseSuppression");
+			const autoGainControlElement = document.querySelector("#autoGainControl");
+			const sampleRateElement = document.querySelector("#sampleRate");
+			const channelCountElement = document.querySelector("#channelCount");
+			const volumeElement = document.querySelector("#volume");
+			const volumeLabelElement = document.querySelector("#volumeLabel");
+
+			let recorder;
+			let stream;
+			let chunks = [];
+			let mode = "idle";
+			let takeIndex = 0;
+			let startedAt = 0;
+
+			function log(message) {
+				logElement.textContent += `${new Date().toLocaleTimeString()} ${message}\n`;
+			}
+
+			function chooseMimeType() {
+				for (const type of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]) {
+					if (MediaRecorder.isTypeSupported(type)) return type;
+				}
+				return "";
+			}
+
+			function audioConstraints() {
+				const echoValue = echoCancellationElement.value;
+				const audio = {
+					echoCancellation: echoValue === "exact" ? { exact: true } : echoValue === "true",
+					noiseSuppression: noiseSuppressionElement.checked,
+					autoGainControl: autoGainControlElement.checked,
+				};
+				if (sampleRateElement.value !== "default") audio.sampleRate = Number(sampleRateElement.value);
+				if (channelCountElement.value !== "default") audio.channelCount = Number(channelCountElement.value);
+				return audio;
+			}
+
+			function settingsSummary() {
+				return JSON.stringify(audioConstraints());
+			}
+
+			function setRunning(running) {
+				playButton.disabled = running;
+				recordOnlyButton.disabled = running;
+				stopButton.disabled = !running;
+			}
+
+			async function stopRecording(reason) {
+				if (!recorder || recorder.state === "inactive") return;
+				log(`stopping: ${reason}`);
+				sourceAudio.pause();
+				recorder.stop();
+			}
+
+			async function startRecording(nextMode) {
+				setRunning(true);
+				chunks = [];
+				mode = nextMode;
+				startedAt = performance.now();
+
+				try {
+					const constraints = audioConstraints();
+					stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+					log(`mic opened: ${JSON.stringify(constraints)}`);
+
+					const [track] = stream.getAudioTracks();
+					log(`applied settings: ${JSON.stringify(track.getSettings())}`);
+					if (track.getCapabilities) log(`capabilities: ${JSON.stringify(track.getCapabilities())}`);
+
+					const mimeType = chooseMimeType();
+					recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+					recorder.addEventListener("dataavailable", (event) => {
+						if (event.data.size > 0) chunks.push(event.data);
+					});
+					recorder.addEventListener("stop", () => {
+						const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+						const url = URL.createObjectURL(blob);
+						const duration = ((performance.now() - startedAt) / 1000).toFixed(1);
+						takeIndex += 1;
+						const take = document.createElement("div");
+						take.className = "take";
+						take.innerHTML = `<strong>Take ${takeIndex}</strong> ${mode}, ${duration}s, ${(blob.size / 1024).toFixed(1)} KiB<br><code>${settingsSummary()}</code>`;
+						const audio = document.createElement("audio");
+						audio.controls = true;
+						audio.src = url;
+						take.append(audio);
+						takesElement.prepend(take);
+						stream?.getTracks().forEach((track) => track.stop());
+						stream = undefined;
+						mode = "idle";
+						setRunning(false);
+						log(`recording ready: ${blob.type}`);
+					});
+
+					recorder.start();
+					if (nextMode === "playback") {
+						sourceAudio.currentTime = 0;
+						await sourceAudio.play();
+					}
+					log(`${nextMode} recording started`);
+				} catch (error) {
+					stream?.getTracks().forEach((track) => track.stop());
+					stream = undefined;
+					mode = "idle";
+					setRunning(false);
+					log(`failed: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+
+			volumeElement.addEventListener("input", () => {
+				sourceAudio.volume = Number(volumeElement.value);
+				volumeLabelElement.textContent = `${Math.round(sourceAudio.volume * 100)}%`;
+			});
+			sourceAudio.volume = Number(volumeElement.value);
+			playButton.addEventListener("click", () => void startRecording("playback"));
+			recordOnlyButton.addEventListener("click", () => void startRecording("clean"));
+			stopButton.addEventListener("click", () => void stopRecording("button"));
+			sourceAudio.addEventListener("ended", () => void stopRecording("source ended"));
+		</script>
+	</body>
+</html>

@@ -10,6 +10,9 @@ function contentTypeFor(file: string): string {
 	const extension = extname(file);
 	if (extension === ".js") return "text/javascript; charset=utf-8";
 	if (extension === ".css") return "text/css; charset=utf-8";
+	if (extension === ".mp3") return "audio/mpeg";
+	if (extension === ".wav") return "audio/wav";
+	if (extension === ".webm") return "audio/webm";
 	return "text/html; charset=utf-8";
 }
 

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Pipi Barge-in Detector Test</title>
+		<style>
+			body {
+				font: 16px system-ui, sans-serif;
+				margin: 2rem;
+				max-width: 56rem;
+				line-height: 1.4;
+			}
+			button,
+			input,
+			select {
+				font: inherit;
+			}
+			button {
+				margin-right: 0.5rem;
+				padding: 0.5rem 0.75rem;
+			}
+			fieldset {
+				border: 1px solid #ccc;
+				margin: 1rem 0;
+				padding: 1rem;
+			}
+			label {
+				display: block;
+				margin: 0.5rem 0;
+			}
+			.meter {
+				background: #eee;
+				border-radius: 0.25rem;
+				height: 1.4rem;
+				margin: 0.25rem 0 0.75rem;
+				overflow: hidden;
+			}
+			.bar {
+				background: #3273dc;
+				height: 100%;
+				width: 0%;
+				transition: width 60ms linear, background 120ms linear;
+			}
+			#state {
+				border-radius: 0.4rem;
+				background: #ddd;
+				display: inline-block;
+				font-weight: 700;
+				margin: 1rem 0;
+				padding: 0.5rem 0.75rem;
+			}
+			#state.barged {
+				background: #c62828;
+				color: white;
+			}
+			pre {
+				background: #111;
+				color: #eee;
+				padding: 1rem;
+				white-space: pre-wrap;
+			}
+			.row {
+				display: grid;
+				grid-template-columns: 10rem 1fr 5rem;
+				align-items: center;
+				gap: 0.75rem;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>Pipi barge-in detector test</h1>
+		<p>
+			This plays the robot reference voice in a loop, watches the mic, estimates how much of
+			the mic signal is explained by delayed playback echo, and ducks playback when residual
+			mic energy looks like a human barge-in.
+		</p>
+
+		<button id="start">Start loop + detector</button>
+		<button id="stop" disabled>Stop</button>
+		<button id="reset" disabled>Reset duck</button>
+		<span id="state">idle</span>
+
+		<fieldset>
+			<legend>Detector tuning</legend>
+			<label>
+				Playback volume: <span id="volumeLabel">100%</span>
+				<input id="volume" type="range" min="0" max="1" step="0.01" value="1" />
+			</label>
+			<label>
+				Ducked volume: <span id="duckVolumeLabel">0%</span>
+				<input id="duckVolume" type="range" min="0" max="1" step="0.01" value="0" />
+			</label>
+			<label>
+				Mic RMS threshold: <span id="micThresholdLabel">0.020</span>
+				<input id="micThreshold" type="range" min="0.002" max="0.12" step="0.001" value="0.02" />
+			</label>
+			<label>
+				Residual ratio threshold: <span id="residualThresholdLabel">0.55</span>
+				<input id="residualThreshold" type="range" min="0.05" max="0.95" step="0.01" value="0.55" />
+			</label>
+			<label>
+				Frames to trigger: <span id="framesLabel">4</span>
+				<input id="framesToTrigger" type="range" min="1" max="20" step="1" value="4" />
+			</label>
+			<label>
+				Duck hold ms: <span id="holdLabel">2000</span>
+				<input id="holdMs" type="range" min="250" max="5000" step="50" value="2000" />
+			</label>
+			<label><input id="echoCancellation" type="checkbox" checked /> Browser echo cancellation</label>
+			<label><input id="noiseSuppression" type="checkbox" checked /> Browser noise suppression</label>
+			<label><input id="autoGainControl" type="checkbox" /> Browser auto gain control</label>
+		</fieldset>
+
+		<h2>Live metrics</h2>
+		<div class="row"><strong>Mic RMS</strong><div class="meter"><div id="micBar" class="bar"></div></div><span id="micValue">0</span></div>
+		<div class="row"><strong>Ref RMS</strong><div class="meter"><div id="refBar" class="bar"></div></div><span id="refValue">0</span></div>
+		<div class="row"><strong>Residual ratio</strong><div class="meter"><div id="residualBar" class="bar"></div></div><span id="residualValue">0</span></div>
+		<div class="row"><strong>Correlation</strong><div class="meter"><div id="corrBar" class="bar"></div></div><span id="corrValue">0</span></div>
+		<div class="row"><strong>Trigger</strong><div class="meter"><div id="triggerBar" class="bar"></div></div><span id="triggerValue">0</span></div>
+		<p>Best estimated echo delay: <strong id="delayValue">0 ms</strong></p>
+
+		<audio id="source" src="/elevenlabs-pibot-reference-de.mp3" preload="auto" loop></audio>
+
+		<h2>Log</h2>
+		<pre id="log"></pre>
+
+		<script type="module">
+			const sourceAudio = document.querySelector("#source");
+			const startButton = document.querySelector("#start");
+			const stopButton = document.querySelector("#stop");
+			const resetButton = document.querySelector("#reset");
+			const stateElement = document.querySelector("#state");
+			const logElement = document.querySelector("#log");
+			const volume = document.querySelector("#volume");
+			const duckVolume = document.querySelector("#duckVolume");
+			const micThreshold = document.querySelector("#micThreshold");
+			const residualThreshold = document.querySelector("#residualThreshold");
+			const framesToTrigger = document.querySelector("#framesToTrigger");
+			const holdMs = document.querySelector("#holdMs");
+			const echoCancellation = document.querySelector("#echoCancellation");
+			const noiseSuppression = document.querySelector("#noiseSuppression");
+			const autoGainControl = document.querySelector("#autoGainControl");
+			const labels = {
+				volume: document.querySelector("#volumeLabel"),
+				duckVolume: document.querySelector("#duckVolumeLabel"),
+				micThreshold: document.querySelector("#micThresholdLabel"),
+				residualThreshold: document.querySelector("#residualThresholdLabel"),
+				frames: document.querySelector("#framesLabel"),
+				hold: document.querySelector("#holdLabel"),
+			};
+			const bars = {
+				mic: document.querySelector("#micBar"),
+				ref: document.querySelector("#refBar"),
+				residual: document.querySelector("#residualBar"),
+				corr: document.querySelector("#corrBar"),
+				trigger: document.querySelector("#triggerBar"),
+			};
+			const values = {
+				mic: document.querySelector("#micValue"),
+				ref: document.querySelector("#refValue"),
+				residual: document.querySelector("#residualValue"),
+				corr: document.querySelector("#corrValue"),
+				trigger: document.querySelector("#triggerValue"),
+				delay: document.querySelector("#delayValue"),
+			};
+
+			let context;
+			let micStream;
+			let sourceNode;
+			let micSource;
+			let refTap;
+			let micTap;
+			let outputGain;
+			let running = false;
+			let ducked = false;
+			let consecutive = 0;
+			let duckTimer;
+			let refWrite = 0;
+			let refTotal = 0;
+			let refRing;
+
+			function log(message) {
+				logElement.textContent += `${new Date().toLocaleTimeString()} ${message}\n`;
+			}
+
+			function setBar(name, value, scale = 1) {
+				const percent = Math.max(0, Math.min(100, (value / scale) * 100));
+				bars[name].style.width = `${percent}%`;
+				values[name].textContent = value.toFixed(3);
+			}
+
+			function updateLabels() {
+				labels.volume.textContent = `${Math.round(Number(volume.value) * 100)}%`;
+				labels.duckVolume.textContent = `${Math.round(Number(duckVolume.value) * 100)}%`;
+				labels.micThreshold.textContent = Number(micThreshold.value).toFixed(3);
+				labels.residualThreshold.textContent = Number(residualThreshold.value).toFixed(2);
+				labels.frames.textContent = framesToTrigger.value;
+				labels.hold.textContent = holdMs.value;
+				if (outputGain) outputGain.gain.setTargetAtTime(ducked ? Number(duckVolume.value) : Number(volume.value), context.currentTime, 0.02);
+			}
+
+			function setState(text, barged) {
+				stateElement.textContent = text;
+				stateElement.classList.toggle("barged", barged);
+			}
+
+			function writeRef(input) {
+				for (const sample of input) {
+					refRing[refWrite] = sample;
+					refWrite = (refWrite + 1) % refRing.length;
+					refTotal += 1;
+				}
+			}
+
+			function readRefAt(totalIndex) {
+				if (totalIndex < 0 || totalIndex >= refTotal) return 0;
+				const index = totalIndex % refRing.length;
+				return refRing[index] ?? 0;
+			}
+
+			function analyseMic(input) {
+				if (!running || refTotal < input.length) return;
+				let micEnergy = 0;
+				for (const sample of input) micEnergy += sample * sample;
+				micEnergy /= input.length;
+				const micRms = Math.sqrt(micEnergy);
+
+				let best = { corr: 0, ratio: 1, delayMs: 0, refRms: 0 };
+				const sampleRate = context.sampleRate;
+				for (let delayMs = 20; delayMs <= 420; delayMs += 10) {
+					const delaySamples = Math.round((delayMs / 1000) * sampleRate);
+					const start = refTotal - delaySamples - input.length;
+					let refEnergy = 0;
+					let dot = 0;
+					for (let i = 0; i < input.length; i++) {
+						const ref = readRefAt(start + i);
+						refEnergy += ref * ref;
+						dot += input[i] * ref;
+					}
+					refEnergy /= input.length;
+					dot /= input.length;
+					if (refEnergy < 1e-7 || micEnergy < 1e-7) continue;
+					const corr = Math.abs(dot) / Math.sqrt(refEnergy * micEnergy);
+					const explained = (dot * dot) / refEnergy;
+					const residualEnergy = Math.max(0, micEnergy - explained);
+					const ratio = residualEnergy / micEnergy;
+					if (corr > best.corr) best = { corr, ratio, delayMs, refRms: Math.sqrt(refEnergy) };
+				}
+
+				const trigger = micRms >= Number(micThreshold.value) && best.ratio >= Number(residualThreshold.value);
+				consecutive = trigger ? consecutive + 1 : Math.max(0, consecutive - 1);
+				const targetFrames = Number(framesToTrigger.value);
+				setBar("mic", micRms, 0.12);
+				setBar("ref", best.refRms, 0.25);
+				setBar("residual", best.ratio, 1);
+				setBar("corr", best.corr, 1);
+				setBar("trigger", consecutive / targetFrames, 1);
+				values.delay.textContent = `${best.delayMs} ms`;
+				bars.residual.style.background = trigger ? "#c62828" : "#3273dc";
+				bars.trigger.style.background = consecutive >= targetFrames ? "#c62828" : "#3273dc";
+
+				if (consecutive >= targetFrames && !ducked) duckPlayback(`barge-in mic=${micRms.toFixed(3)} residual=${best.ratio.toFixed(2)} corr=${best.corr.toFixed(2)} delay=${best.delayMs}ms`);
+			}
+
+			function duckPlayback(reason) {
+				ducked = true;
+				setState("BARGE-IN: playback ducked", true);
+				log(reason);
+				outputGain.gain.setTargetAtTime(Number(duckVolume.value), context.currentTime, 0.015);
+				clearTimeout(duckTimer);
+				duckTimer = setTimeout(resetDuck, Number(holdMs.value));
+			}
+
+			function resetDuck() {
+				if (!context || !outputGain) return;
+				ducked = false;
+				consecutive = 0;
+				setState("listening for barge-in", false);
+				outputGain.gain.setTargetAtTime(Number(volume.value), context.currentTime, 0.04);
+			}
+
+			async function start() {
+				if (running) return;
+				context = new AudioContext();
+				refRing = new Float32Array(context.sampleRate * 8);
+				outputGain = context.createGain();
+				outputGain.gain.value = Number(volume.value);
+				refTap = context.createScriptProcessor(1024, 1, 1);
+				micTap = context.createScriptProcessor(1024, 1, 1);
+				refTap.onaudioprocess = (event) => {
+					const input = event.inputBuffer.getChannelData(0);
+					writeRef(input);
+					const output = event.outputBuffer.getChannelData(0);
+					output.set(input);
+				};
+				micTap.onaudioprocess = (event) => analyseMic(event.inputBuffer.getChannelData(0));
+
+				micStream = await navigator.mediaDevices.getUserMedia({
+					audio: {
+						echoCancellation: echoCancellation.checked,
+						noiseSuppression: noiseSuppression.checked,
+						autoGainControl: autoGainControl.checked,
+						channelCount: { ideal: 1 },
+						sampleRate: { ideal: 48000 },
+					},
+				});
+				const [track] = micStream.getAudioTracks();
+				log(`mic settings: ${JSON.stringify(track.getSettings())}`);
+
+				sourceNode = context.createMediaElementSource(sourceAudio);
+				micSource = context.createMediaStreamSource(micStream);
+				sourceNode.connect(refTap);
+				refTap.connect(outputGain);
+				outputGain.connect(context.destination);
+				micSource.connect(micTap);
+				micTap.connect(context.destination);
+				sourceAudio.currentTime = 0;
+				await sourceAudio.play();
+				running = true;
+				startButton.disabled = true;
+				stopButton.disabled = false;
+				resetButton.disabled = false;
+				setState("listening for barge-in", false);
+				log(`started contextRate=${context.sampleRate}`);
+			}
+
+			function stop() {
+				running = false;
+				clearTimeout(duckTimer);
+				sourceAudio.pause();
+				for (const node of [sourceNode, micSource, refTap, micTap, outputGain]) node?.disconnect();
+				micStream?.getTracks().forEach((track) => track.stop());
+				void context?.close();
+				context = undefined;
+				micStream = undefined;
+				ducked = false;
+				consecutive = 0;
+				refWrite = 0;
+				refTotal = 0;
+				startButton.disabled = false;
+				stopButton.disabled = true;
+				resetButton.disabled = true;
+				setState("idle", false);
+				log("stopped");
+			}
+
+			for (const input of [volume, duckVolume, micThreshold, residualThreshold, framesToTrigger, holdMs]) {
+				input.addEventListener("input", updateLabels);
+			}
+			updateLabels();
+			startButton.addEventListener("click", () => start().catch((error) => log(`start failed: ${error instanceof Error ? error.message : String(error)}`)));
+			stopButton.addEventListener("click", stop);
+			resetButton.addEventListener("click", resetDuck);
+		</script>
+	</body>
+</html>

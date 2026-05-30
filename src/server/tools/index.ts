@@ -4,6 +4,7 @@ import type { MemoryStore } from "./memory.js";
 import { createMemoryTool } from "./memory.js";
 import { createMotorTools } from "./motor.js";
 import { createPhotoTool } from "./photo.js";
+import { sleepTool } from "./sleep.js";
 import { createSpotifyTools } from "./spotify.js";
 import { pageContentTool, webSearchTool } from "./websearch.js";
 
@@ -14,6 +15,7 @@ export function createRobotTools(robot: RobotClient, memoryStore: MemoryStore): 
 		...createMotorTools(robot),
 		createPhotoTool(robot),
 		...createSpotifyTools(robot),
+		sleepTool,
 		webSearchTool,
 		pageContentTool,
 		createMemoryTool(memoryStore),

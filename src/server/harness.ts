@@ -93,6 +93,7 @@ export type RobotHarnessEvent =
 	| { type: "assistant_start" }
 	| { type: "assistant_delta"; text: string }
 	| { type: "tool_start"; name: string; args: unknown }
+	| { type: "tool_end"; name: string; isError: boolean }
 	| { type: "assistant_end"; text: string }
 	| { type: "session_reset"; reason: string };
 
@@ -166,6 +167,9 @@ export async function createRobotHarness(deps: {
 			}
 			if (event.type === "tool_execution_start") {
 				await emit({ type: "tool_start", name: event.toolName, args: event.args });
+			}
+			if (event.type === "tool_execution_end") {
+				await emit({ type: "tool_end", name: event.toolName, isError: event.isError });
 			}
 			if (event.type === "message_end" && event.message.role === "assistant") {
 				await emit({ type: "assistant_end", text: extractAssistantText(event.message) });

@@ -8,11 +8,11 @@ import type { RobotSetupPanelElement } from "./components/setup-panel.js";
 import "./components/spotify-panel.js";
 
 import type { SpotifyNowPlaying } from "../types.js";
+import { BargeInDetector } from "./barge-in.js";
 import type { SpotifyPanelElement } from "./components/spotify-panel.js";
 import { BrowserClientLogger } from "./logger.js";
 import { RobotServer } from "./robot-server.js";
 import { createRobotTools } from "./tools/index.js";
-import type { ConversationPhase } from "./tools/speech.js";
 
 const setup = document.querySelector<HTMLElement>("#setup");
 const robot = document.querySelector<HTMLElement>("#robot");
@@ -79,13 +79,13 @@ let micStream: MediaStream | undefined;
 let micAudioContext: AudioContext | undefined;
 let micSource: MediaStreamAudioSourceNode | undefined;
 let micProcessor: ScriptProcessorNode | undefined;
-let phase: ConversationPhase = "inactive";
 let serverRobotState: RobotState = { phase: "inactive" };
 let currentFaceState: RobotFaceState = "inactive";
 let ignoreMicUntil = 0;
 let ttsSpeaking = false;
 let errorUntil = 0;
 let robotStarted = false;
+const bargeInDetector = new BargeInDetector(targetSttSampleRate);
 
 function stringifyLogValue(value: unknown): string {
 	if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`.trim();
@@ -114,7 +114,6 @@ function send(data: ClientMessage): void {
 
 function deriveRobotFaceState(): RobotFaceState {
 	if (Date.now() < errorUntil) return "error";
-	if (serverRobotState.phase === "speaking" || ttsSpeaking) return "speaking";
 	return serverRobotState.phase;
 }
 
@@ -131,26 +130,8 @@ function showErrorFor(durationMs: number): void {
 	setTimeout(renderRobotFace, durationMs + 20);
 }
 
-function setPhase(nextPhase: ConversationPhase): void {
-	if (phase !== nextPhase) {
-		phase = nextPhase;
-		log(`phase: ${phase}`);
-	}
-	renderRobotFace();
-}
-
 function setTtsSpeaking(active: boolean): void {
 	ttsSpeaking = active;
-	renderRobotFace();
-}
-
-function resetToListeningOrIdle(): void {
-	setPhase(recognitionWanted ? "listening" : "inactive");
-}
-
-function resetRecognitionAfterTts(): void {
-	ignoreMicUntil = Date.now() + 1500;
-	if (recognitionWanted) setPhase("listening");
 }
 
 function setMicInputBlockedUntil(time: number): void {
@@ -188,11 +169,9 @@ function updateSpotifyPanel(): void {
 tools = createRobotTools({
 	logger: clientLogger,
 	face: robotFace,
-	setPhase,
-	resetToListeningOrIdle,
-	resetRecognitionAfterTts,
 	setMicInputBlockedUntil,
 	onSpeakingChange: setTtsSpeaking,
+	onPlaybackAudio: (samples, sampleRate) => bargeInDetector.handlePlaybackAudio(samples, sampleRate),
 	onSpotifyPlaybackChange: renderSpotifyNowPlaying,
 	onSpotifyStatusChange: updateSpotifyPanel,
 });
@@ -223,6 +202,7 @@ robotServer = new RobotServer({
 	events: {
 		onState: (state) => {
 			serverRobotState = state;
+			if (state.phase === "listening" || state.phase === "inactive") bargeInDetector.resetStreaming();
 			renderRobotFace();
 		},
 		onLog: (entry) => robotLog.appendLine(entry.origin, entry.tags, entry.message),
@@ -236,6 +216,21 @@ clientLogger.setSender((message) => robotServer.send(message));
 
 function micInputBlocked(): boolean {
 	return Date.now() < ignoreMicUntil;
+}
+
+function sendPcmToServer(pcm: Int16Array): void {
+	if (pcm.byteLength === 0) return;
+	const buffer = new ArrayBuffer(pcm.byteLength);
+	new Uint8Array(buffer).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+	robotServer.sendBinary(buffer);
+}
+
+function startBargeInStream(preroll: Int16Array): void {
+	tools.speech.cancelSpeechForBargeIn();
+	setMicInputBlockedUntil(0);
+	send({ type: "barge_in" });
+	sendPcmToServer(preroll);
+	log("barge-in detected; stopped TTS and forwarded mic preroll", "stt");
 }
 
 function resampleToPcm16(input: Float32Array, inputSampleRate: number): Int16Array {
@@ -254,11 +249,19 @@ function resampleToPcm16(input: Float32Array, inputSampleRate: number): Int16Arr
 }
 
 function sendMicAudio(input: Float32Array, sampleRate: number): void {
-	if (!recognitionWanted || !robotServer.isOpen() || micInputBlocked()) return;
+	if (!recognitionWanted || !robotServer.isOpen()) return;
 	const pcm = resampleToPcm16(input, sampleRate);
-	const buffer = new ArrayBuffer(pcm.byteLength);
-	new Uint8Array(buffer).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
-	robotServer.sendBinary(buffer);
+	const barge = bargeInDetector.observeMic(input, sampleRate, pcm, serverRobotState, ttsSpeaking);
+	if (barge.triggered) {
+		startBargeInStream(barge.preroll ?? new Int16Array());
+		return;
+	}
+	if (
+		bargeInDetector.isStreaming() ||
+		(!micInputBlocked() && bargeInDetector.shouldStreamMicNormally(serverRobotState))
+	) {
+		sendPcmToServer(pcm);
+	}
 }
 
 async function startRecognition(): Promise<void> {
@@ -277,18 +280,16 @@ async function startRecognition(): Promise<void> {
 		if (settings) log(`mic settings: ${JSON.stringify(settings)}`, "stt");
 		micAudioContext = new AudioContext();
 		micSource = micAudioContext.createMediaStreamSource(micStream);
-		micProcessor = micAudioContext.createScriptProcessor(4096, 1, 1);
+		micProcessor = micAudioContext.createScriptProcessor(1024, 1, 1);
 		micProcessor.onaudioprocess = (event) => {
 			const input = event.inputBuffer.getChannelData(0);
 			sendMicAudio(input, event.inputBuffer.sampleRate);
 		};
 		micSource.connect(micProcessor);
 		micProcessor.connect(micAudioContext.destination);
-		setPhase("listening");
 		log(`local STT started: phone PCM -> Parakeet/Silero server, browserRate=${micAudioContext.sampleRate}`, "stt");
 	} catch (error) {
 		recognitionWanted = false;
-		setPhase("inactive");
 		log(`local STT start failed: ${error instanceof Error ? error.message : String(error)}`, "stt");
 	}
 }
@@ -298,8 +299,7 @@ function abortCurrentAgentTurn(): void {
 	tools.motor.stopLocalMotorsNow();
 	showErrorFor(700);
 	send({ type: "abort" });
-	resetToListeningOrIdle();
-	resetRecognitionAfterTts();
+	setMicInputBlockedUntil(Date.now() + 1500);
 	log("agent turn aborted by touch", "stt");
 }
 

@@ -2,7 +2,7 @@ import type { RobotRpcMap, RobotRpcType, SpotifyNowPlaying } from "../../types.j
 import type { ClientLogger } from "../logger.js";
 import { createMotorTool, type MotorTool } from "./motor.js";
 import { createPhotoTool, type PhotoTool } from "./photo.js";
-import { type ConversationPhase, createSpeechTool, type SpeechTool } from "./speech.js";
+import { createSpeechTool, type SpeechTool } from "./speech.js";
 import { createSpotifyTool, type SpotifyTool } from "./spotify.js";
 
 export type RobotToolHandler<T extends RobotRpcType> = (
@@ -29,11 +29,9 @@ export interface RobotTools {
 export function createRobotTools(deps: {
 	logger: ClientLogger;
 	face: HTMLElement;
-	setPhase: (phase: ConversationPhase) => void;
-	resetToListeningOrIdle: () => void;
-	resetRecognitionAfterTts: () => void;
 	setMicInputBlockedUntil: (time: number) => void;
 	onSpeakingChange: (speaking: boolean) => void;
+	onPlaybackAudio: (samples: Float32Array, sampleRate: number) => void;
 	onSpotifyPlaybackChange: (playback: SpotifyNowPlaying | undefined) => void;
 	onSpotifyStatusChange: () => void;
 }): RobotTools {
@@ -47,11 +45,9 @@ export function createRobotTools(deps: {
 	const speech = createSpeechTool({
 		logger: deps.logger,
 		face: deps.face,
-		setPhase: deps.setPhase,
-		resetToListeningOrIdle: deps.resetToListeningOrIdle,
-		resetRecognitionAfterTts: deps.resetRecognitionAfterTts,
 		setMicInputBlockedUntil: deps.setMicInputBlockedUntil,
 		onSpeakingChange: deps.onSpeakingChange,
+		onPlaybackAudio: deps.onPlaybackAudio,
 	});
 	return {
 		handlers: {

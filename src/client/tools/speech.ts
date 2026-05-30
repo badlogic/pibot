@@ -1,8 +1,6 @@
 import type { RobotRpcMap } from "../../types.js";
 import type { ClientLogger } from "../logger.js";
 
-export type ConversationPhase = "inactive" | "listening" | "thinking" | "speaking";
-
 interface ActiveSpeech {
 	generation: number;
 	resolve: (response: RobotRpcMap["speak"]["response"]) => void;
@@ -25,6 +23,7 @@ interface ActivePcmStream {
 export interface SpeechTool {
 	enableTts: () => void;
 	cancelSpeech: (reason: string) => void;
+	cancelSpeechForBargeIn: () => void;
 	handleSpeak: (
 		payload: RobotRpcMap["speak"]["request"],
 		signal: AbortSignal,
@@ -42,11 +41,9 @@ export interface SpeechTool {
 export function createSpeechTool(deps: {
 	logger: ClientLogger;
 	face: HTMLElement;
-	setPhase: (phase: ConversationPhase) => void;
-	resetToListeningOrIdle: () => void;
-	resetRecognitionAfterTts: () => void;
 	setMicInputBlockedUntil: (time: number) => void;
 	onSpeakingChange: (speaking: boolean) => void;
+	onPlaybackAudio: (samples: Float32Array, sampleRate: number) => void;
 }): SpeechTool {
 	const logger = deps.logger.tag("stt");
 	const ttsEnabledKey = "robot-tts-enabled";
@@ -203,15 +200,13 @@ export function createSpeechTool(deps: {
 		clearActivePcmStream(true);
 		deps.onSpeakingChange(false);
 		deps.setMicInputBlockedUntil(Date.now() + 500);
-		deps.resetToListeningOrIdle();
-		deps.resetRecognitionAfterTts();
-		logger.log("Qwen3 PCM stream finished, resetting STT");
+		logger.log("Qwen3 PCM stream finished");
 	}
 
-	function interruptTtsOnly(): void {
+	function interruptTtsOnly(resolvePcmFinished = true): void {
 		ttsGeneration++;
 		clearCurrentTtsAudio();
-		clearActivePcmStream(true);
+		clearActivePcmStream(resolvePcmFinished);
 		if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 	}
 
@@ -229,8 +224,15 @@ export function createSpeechTool(deps: {
 		deps.onSpeakingChange(false);
 		completeActiveSpeech({ ok: true });
 		deps.setMicInputBlockedUntil(Date.now() + 500);
-		deps.resetToListeningOrIdle();
 		logger.log(`TTS cancelled: ${reason}`);
+	}
+
+	function cancelSpeechForBargeIn(): void {
+		interruptTtsOnly(false);
+		deps.onSpeakingChange(false);
+		completeActiveSpeech({ ok: true });
+		deps.setMicInputBlockedUntil(0);
+		logger.log("TTS cancelled: barge-in");
 	}
 
 	function enableTts(): void {
@@ -243,8 +245,6 @@ export function createSpeechTool(deps: {
 		deps.onSpeakingChange(false);
 		completeActiveSpeech({ ok: true });
 		deps.setMicInputBlockedUntil(Date.now() + 500);
-		deps.resetToListeningOrIdle();
-		deps.resetRecognitionAfterTts();
 		logger.log(message);
 	}
 
@@ -258,7 +258,6 @@ export function createSpeechTool(deps: {
 		const providerLabel = "Qwen3 local clone";
 		clearCurrentTtsAudio();
 		deps.onSpeakingChange(true);
-		deps.setPhase("speaking");
 		deps.setMicInputBlockedUntil(0);
 
 		const audio = new Audio(url);
@@ -335,11 +334,18 @@ export function createSpeechTool(deps: {
 		const analyser = context.createAnalyser();
 		analyser.fftSize = 512;
 		analyser.smoothingTimeConstant = 0.55;
+		const playbackTap = context.createScriptProcessor(1024, 1, 1);
+		playbackTap.onaudioprocess = (event) => {
+			const input = event.inputBuffer.getChannelData(0);
+			deps.onPlaybackAudio(input, event.inputBuffer.sampleRate);
+			event.outputBuffer.getChannelData(0).set(input);
+		};
 		highpass.connect(lowpass);
 		lowpass.connect(presence);
 		presence.connect(compressor);
 		compressor.connect(output);
-		output.connect(context.destination);
+		output.connect(playbackTap);
+		playbackTap.connect(context.destination);
 		output.connect(analyser);
 		activePcmStream = {
 			generation: ++ttsGeneration,
@@ -348,11 +354,10 @@ export function createSpeechTool(deps: {
 			pendingSources: 0,
 			doneRequested: false,
 			finishResolve: undefined,
-			nodes: [highpass, lowpass, presence, compressor, output, analyser],
+			nodes: [highpass, lowpass, presence, compressor, output, playbackTap, analyser],
 			cleanup: startFaceAmpLoop(analyser),
 		};
 		deps.onSpeakingChange(true);
-		deps.setPhase("speaking");
 		deps.setMicInputBlockedUntil(0);
 		logger.log(`Qwen3 PCM stream started sampleRate=${sampleRate}`);
 	}
@@ -396,13 +401,13 @@ export function createSpeechTool(deps: {
 		clearActivePcmStream(true);
 		deps.onSpeakingChange(false);
 		deps.setMicInputBlockedUntil(Date.now() + 500);
-		deps.resetToListeningOrIdle();
 		logger.log(`Qwen3 PCM stream failed: ${message}`);
 	}
 
 	return {
 		enableTts,
 		cancelSpeech,
+		cancelSpeechForBargeIn,
 		handleSpeak,
 		handleCancelSpeech,
 		startPcmStream,

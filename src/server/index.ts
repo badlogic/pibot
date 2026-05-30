@@ -23,6 +23,9 @@ let activeAssistantText = "";
 let ttsStartedForTurn = false;
 let speechPlaybackFinished: Promise<void> | undefined;
 let resolveSpeechPlaybackFinished: (() => void) | undefined;
+let bargeInActive = false;
+let activeToolCount = 0;
+let activeToolState: { name: string; args: unknown } | undefined;
 
 const logger = createLogger((entry) => {
 	console.log(formatEntry(entry, true));
@@ -171,7 +174,12 @@ function handleSttEvent(event: SttEvent): void {
 		sttLogger.log(
 			`interim #${event.index} audioMs=${event.audioMs} windowMs=${event.windowMs ?? "full"} decodeMs=${event.decodeMs} text=${JSON.stringify(event.text)}`,
 		);
-		if (speechActive && event.text && looksLikeStopCommand(event.text) && stoppedUtteranceIndex !== event.index) {
+		if (
+			(speechActive || bargeInActive) &&
+			event.text &&
+			looksLikeStopCommand(event.text) &&
+			stoppedUtteranceIndex !== event.index
+		) {
 			stoppedUtteranceIndex = event.index;
 			sttLogger.log("stop-word detected in interim");
 			void abortRobotTurn(`interim stop word: ${event.text}`);
@@ -180,14 +188,42 @@ function handleSttEvent(event: SttEvent): void {
 	if (event.type === "error") setRobotState({ phase: "error", message: event.message });
 	if (event.type === "final") {
 		sttLogger.log(`final #${event.index} decodeMs=${event.decodeMs} text=${JSON.stringify(event.text)}`);
-		if (stoppedUtteranceIndex === event.index) return;
-		if (speechActive && event.text && looksLikeStopCommand(event.text)) {
+		if (stoppedUtteranceIndex === event.index) {
+			stoppedUtteranceIndex = undefined;
+			bargeInActive = false;
+			setRobotState({ phase: "listening" });
+			return;
+		}
+		if (event.text && looksLikeStopCommand(event.text) && (speechActive || bargeInActive)) {
 			stoppedUtteranceIndex = event.index;
 			sttLogger.log("stop-word detected in final");
+			bargeInActive = false;
 			void abortRobotTurn(`final stop word: ${event.text}`);
 			return;
 		}
-		if (!event.text || speechActive || Date.now() - lastSpeechEndedAt < 1500) {
+		if (!event.text) {
+			bargeInActive = false;
+			setRobotState({ phase: "listening" });
+			return;
+		}
+		if (bargeInActive) {
+			bargeInActive = false;
+			if (activeToolCount > 0) {
+				sttLogger.log(`ignored barge-in final while tool is active: ${JSON.stringify(event.text)}`);
+				if (activeToolState) {
+					setRobotState({
+						phase: "tool",
+						name: activeToolState.name,
+						args: activeToolState.args,
+						assistantText: assistantText(),
+					});
+				} else setRobotState({ phase: "listening" });
+				return;
+			}
+			submitPrompt(event.text);
+			return;
+		}
+		if (speechActive || Date.now() - lastSpeechEndedAt < 1500) {
 			setRobotState({ phase: "listening" });
 			return;
 		}
@@ -222,7 +258,7 @@ function startAssistantSpeechStream(): void {
 	});
 }
 
-function finishSpeechPlayback(reason: string): void {
+function finishSpeechPlayback(reason: string, setListening = true): void {
 	if (!speechActive && !ttsStartedForTurn) return;
 	speechActive = false;
 	ttsStartedForTurn = false;
@@ -230,16 +266,19 @@ function finishSpeechPlayback(reason: string): void {
 	resolveSpeechPlaybackFinished?.();
 	resolveSpeechPlaybackFinished = undefined;
 	speechPlaybackFinished = undefined;
-	lastSpeechEndedAt = Date.now();
 	ttsLogger.log(`speech finished: ${reason}`);
+	if (!setListening) return;
+	lastSpeechEndedAt = Date.now();
 	setRobotState({ phase: "listening" });
 }
 
 async function waitForSpeechBeforeTool(name: string): Promise<void> {
 	const pendingSpeech = speechPlaybackFinished;
-	if (!pendingSpeech) return;
-	ttsLogger.log(`waiting for speech before tool ${name}`);
-	await pendingSpeech;
+	if (pendingSpeech) {
+		ttsLogger.log(`waiting for speech before tool ${name}`);
+		await pendingSpeech;
+	}
+	if (bargeInActive) throw new Error(`tool ${name} blocked by barge-in`);
 }
 
 function sanitizeTextForTts(text: string): string {
@@ -259,6 +298,15 @@ function handleAssistantTextDelta(text: string): void {
 }
 
 async function handleHarnessEvent(event: RobotHarnessEvent): Promise<void> {
+	if (bargeInActive) {
+		if (event.type === "tool_end") {
+			activeToolCount = Math.max(0, activeToolCount - 1);
+			if (activeToolCount === 0) activeToolState = undefined;
+			agentLogger.log(`tool ${event.name} finished${event.isError ? " with error" : ""}`);
+		}
+		if (event.type !== "tool_end") agentLogger.log(`ignored stale ${event.type} during barge-in`);
+		return;
+	}
 	if (event.type === "assistant_start") {
 		activeAssistantText = "";
 		activeChunker = createSentenceChunker({ sentencesPerChunk: 1 });
@@ -267,8 +315,15 @@ async function handleHarnessEvent(event: RobotHarnessEvent): Promise<void> {
 	}
 	if (event.type === "assistant_delta") handleAssistantTextDelta(event.text);
 	if (event.type === "tool_start") {
+		activeToolCount++;
+		activeToolState = { name: event.name, args: event.args };
 		setRobotState({ phase: "tool", name: event.name, args: event.args, assistantText: assistantText() });
 		agentLogger.log(`tool ${event.name} ${JSON.stringify(event.args)}`);
+	}
+	if (event.type === "tool_end") {
+		activeToolCount = Math.max(0, activeToolCount - 1);
+		if (activeToolCount === 0) activeToolState = undefined;
+		agentLogger.log(`tool ${event.name} finished${event.isError ? " with error" : ""}`);
 	}
 	if (event.type === "assistant_end") {
 		if (event.text) agentLogger.log(`LLM: ${event.text}`);
@@ -289,6 +344,9 @@ async function handleHarnessEvent(event: RobotHarnessEvent): Promise<void> {
 }
 
 async function abortRobotTurn(reason: string): Promise<void> {
+	bargeInActive = false;
+	activeToolCount = 0;
+	activeToolState = undefined;
 	agentLogger.log(`abort: ${reason}`);
 	void robot.execute({ type: "cancel_speech", payload: { reason }, timeoutMs: 1000 }).catch(() => undefined);
 	tts.cancel(reason);
@@ -300,6 +358,25 @@ async function abortRobotTurn(reason: string): Promise<void> {
 		agentLogger.log(`harness abort error: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	setRobotState({ phase: "listening" });
+}
+
+async function handleBargeIn(): Promise<void> {
+	const interruptedPhase = robotState.phase;
+	bargeInActive = true;
+	lastSpeechEndedAt = 0;
+	stoppedUtteranceIndex = undefined;
+	sttLogger.log(`barge-in detected by client during ${interruptedPhase}`);
+	setRobotState({ phase: "hearing" });
+	if (interruptedPhase !== "speaking" && interruptedPhase !== "thinking") return;
+	tts.cancel("barge-in");
+	robot.sendTtsDone();
+	finishSpeechPlayback("barge-in", false);
+	try {
+		await harness.current().abort();
+	} catch (error) {
+		agentLogger.log(`harness abort error: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (bargeInActive) setRobotState({ phase: "hearing" });
 }
 
 async function handleWebsocketEvent(event: WebsocketEvent): Promise<void> {
@@ -323,14 +400,23 @@ async function handleWebsocketEvent(event: WebsocketEvent): Promise<void> {
 		}
 		if (robot.handleMessage(msg)) return;
 		if (msg.type === "tts_playback_done") {
+			if (bargeInActive) {
+				ttsLogger.log("ignored late playback done after barge-in");
+				return;
+			}
 			finishSpeechPlayback("client playback done");
 			return;
 		}
 		if (msg.type === "tts_playback_error") {
+			if (bargeInActive) {
+				ttsLogger.log(`ignored late playback error after barge-in: ${msg.message}`);
+				return;
+			}
 			finishSpeechPlayback(`client playback error: ${msg.message}`);
 			return;
 		}
 		if (msg.type === "abort") await abortRobotTurn("client abort");
+		if (msg.type === "barge_in") await handleBargeIn();
 		if (msg.type === "reset_session") {
 			serverLogger.log("session reset: client request");
 			await abortRobotTurn("reset: client request");
