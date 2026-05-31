@@ -14,7 +14,7 @@ const workerOutputAudioChunk = 3;
 const workerOutputAudioDone = 4;
 const workerOutputError = 5;
 const frameHeaderBytes = 9;
-const defaultRustTtsModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit";
+const defaultRustTtsModelRepo = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit";
 const ignoredHuggingFaceFiles = new Set([".gitattributes", "README.md"]);
 const requiredRustTtsModelFiles = [
 	"config.json",
@@ -214,7 +214,7 @@ async function ensureRustTtsModel(modelDir: string, logger: Logger): Promise<voi
 
 export function createTtsService(deps: TtsServiceDeps): TtsService {
 	const workerKind = parseWorkerKind(deps.workerKind);
-	const qwen3ModelName = process.env.QWEN3_TTS_MODEL_NAME ?? "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit";
+	const qwen3ModelName = process.env.QWEN3_TTS_MODEL_NAME ?? "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit";
 	const qwen3RefAudio = process.env.QWEN3_TTS_REF_AUDIO ?? "data/voices/elevenlabs-pibot-reference-de.wav";
 	const qwen3RefTextFile = process.env.QWEN3_TTS_REF_TEXT_FILE ?? "data/voices/elevenlabs-pibot-reference-de.txt";
 	const qwen3Language = process.env.QWEN3_TTS_LANGUAGE ?? "de";
