@@ -102,6 +102,38 @@ def normalize_mlx_quantization(value: str | None) -> str | None:
     return normalized
 
 
+def normalize_language(value: str) -> str:
+    normalized = value.strip().lower().replace("_", "-")
+    aliases = {
+        "": "auto",
+        "auto": "auto",
+        "de": "german",
+        "de-de": "german",
+        "en": "english",
+        "en-us": "english",
+        "en-gb": "english",
+        "fr": "french",
+        "fr-fr": "french",
+        "es": "spanish",
+        "es-es": "spanish",
+        "it": "italian",
+        "it-it": "italian",
+        "pt": "portuguese",
+        "pt-br": "portuguese",
+        "pt-pt": "portuguese",
+        "ja": "japanese",
+        "ja-jp": "japanese",
+        "ko": "korean",
+        "ko-kr": "korean",
+        "zh": "chinese",
+        "zh-cn": "chinese",
+        "zh-tw": "chinese",
+        "ru": "russian",
+        "ru-ru": "russian",
+    }
+    return aliases.get(normalized, normalized)
+
+
 def model_quantization_suffix(model_name: str) -> str | None:
     for suffix in VALID_MLX_QUANTIZATION_SUFFIXES:
         if model_name.endswith(f"-{suffix}"):
@@ -630,6 +662,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    args.language = normalize_language(args.language)
     if args.serve:
         serve(args)
     else:
