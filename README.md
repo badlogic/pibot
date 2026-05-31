@@ -1,25 +1,24 @@
 # Pipi
 
-A cute little smartphone robot that can talk to you, store memories about you, take photos, and drive around (provided you give it the legs of a [Octobot](https://robo.silverlit.com/products/octobot/))
+Pipi is a smartphone robot that can talk, remember things, take photos, and drive around when mounted on an [Octobot](https://robo.silverlit.com/products/octobot/).
 
-## Development setup
-
-Prerequisites:
+## Requirements
 
 - Node.js 22+
-- Rust toolchain for native STT and optional native Qwen3-TTS workers
-- Xcode command line tools, Xcode Metal Toolchain, CMake, pkg-config, and Opus for the Rust Qwen3-TTS MLX backend on Apple Silicon macOS
-- `uv` available on `PATH` if you use the optional Python/MLX Qwen3-TTS worker
-- `tar` available on `PATH` so Pipi can extract llama.cpp release archives
+- Rust toolchain for native STT/TTS workers
+- Apple Silicon macOS for the Rust MLX Qwen3-TTS backend
+- Xcode command line tools, Xcode Metal Toolchain, CMake, pkg-config, and Opus
+- `uv` on `PATH` for the optional Python/MLX Qwen3-TTS worker
+- `tar` on `PATH` for llama.cpp release extraction
 
-On Apple Silicon macOS, install the native build prerequisites first:
+Install native build prerequisites on Apple Silicon macOS:
 
 ```bash
 brew install cmake pkg-config opus
 xcodebuild -downloadComponent MetalToolchain
 ```
 
-Then install, build, and run:
+## Setup
 
 ```bash
 npm install --ignore-scripts
@@ -34,16 +33,31 @@ Open:
 http://localhost:8010
 ```
 
-For phone access, expose port `8010` via ngrok HTTPS.
+For phone access, expose port `8010` over HTTPS, for example with ngrok.
+
+## Scripts
+
+```bash
+npm run dev             # start the development server
+npm run build:native    # build STT and TTS native workers
+npm run build:stt-rust  # build only the Rust STT worker
+npm run build:tts-rust  # build only the Rust Qwen3-TTS worker
+npm run check           # format/lint/typecheck/build client
+npm run bench:stt       # benchmark STT worker
+npm run bench:tts       # benchmark TTS worker
+npm run bench:llm       # benchmark local LLM server
+```
 
 ## Local LLM
 
-On startup, Pipi connects to an existing OpenAI-compatible llama.cpp server at `http://127.0.0.1:8080/v1` if one is already running. Otherwise it downloads a pinned llama.cpp release binary into `~/.cache/pibot/llama.cpp`, downloads missing local LLM GGUF files, and starts `llama-server` automatically. The default local LLM is Qwen3.6 35B A3B. Set `LOCAL_LLM=gemma` to try the MoE model `ggml-org/gemma-4-26B-A4B-it-GGUF` instead.
+Pipi uses a local OpenAI-compatible llama.cpp server. On startup it connects to `http://127.0.0.1:8080/v1` if one is already running. Otherwise it downloads a pinned llama.cpp release into `~/.cache/pibot/llama.cpp`, downloads missing GGUF model files, and starts `llama-server` automatically.
 
-Override paths/settings with:
+The default local LLM is Gemma 4 26B A4B MoE Q4. Set `LOCAL_LLM=qwen` to use Qwen3.6 35B A3B instead.
+
+Useful overrides:
 
 ```bash
-LOCAL_LLM=qwen # or gemma
+LOCAL_LLM=gemma # or qwen
 PIBOT_CACHE_DIR=/path/to/cache
 LLAMA_BASE_URL=http://127.0.0.1:8080/v1
 LLAMA_HOST=127.0.0.1
@@ -52,37 +66,68 @@ LLAMA_CONTEXT_WINDOW=131072
 LLAMA_MODEL_DIR=/path/to/model-dir
 ```
 
-## Native workers
+## STT
 
-Build both native workers:
+Pipi uses the Rust Parakeet/Silero STT worker automatically. On startup it downloads missing Parakeet TDT int8 ONNX files from `istupakov/parakeet-tdt-0.6b-v3-onnx` into:
 
-```bash
-npm run build:native
+```text
+~/models/parakeet-tdt-0.6b-v3-onnx-int8
 ```
 
-Build only STT:
+Override the model directory with:
 
 ```bash
-npm run build:stt-rust
+PARAKEET_TDT_MODEL_DIR=/path/to/parakeet-model
 ```
 
-Build only the Rust Qwen3-TTS worker submodule:
+Required files:
+
+- `encoder-model.int8.onnx`
+- `decoder_joint-model.int8.onnx`
+- `vocab.txt`
+
+Interim transcript tuning:
 
 ```bash
-npm run build:tts-rust
+PARAKEET_INTERIM_INTERVAL_MS=250
+PARAKEET_INTERIM_MIN_AUDIO_MS=300
+PARAKEET_INTERIM_WINDOW_MS=4000
 ```
 
-The server uses the Rust STT worker automatically. On startup, Pipi downloads missing Parakeet TDT int8 ONNX files from Hugging Face into `~/models/parakeet-tdt-0.6b-v3-onnx-int8`. Set `PARAKEET_TDT_MODEL_DIR` to use a different location.
+Set `PARAKEET_INTERIM_INTERVAL_MS=0` to disable interim transcripts.
 
-STT emits low-latency interim transcripts for stop-word detection. Interim decodes default to every `250ms`, start after `300ms` of speech, and decode only the most recent `4000ms` audio window. Override with `PARAKEET_INTERIM_INTERVAL_MS`, `PARAKEET_INTERIM_MIN_AUDIO_MS`, and `PARAKEET_INTERIM_WINDOW_MS`. Set `PARAKEET_INTERIM_INTERVAL_MS=0` to disable interims.
+## TTS
 
-Model source: `istupakov/parakeet-tdt-0.6b-v3-onnx` on Hugging Face. Required files: `encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, and `vocab.txt`.
+Default TTS uses the Rust MLX Qwen3-TTS worker:
 
-## Qwen3-TTS worker
+```text
+native/qwen3_tts_rs/target/release/pibot-tts-worker
+```
 
-Default TTS uses the Rust Qwen3-TTS worker. The Rust worker binary defaults to `native/qwen3_tts_rs/target/release/worker`. The Rust model directory defaults to `~/models/qwen3-tts-12hz-0.6b-base` and is downloaded by the server on startup when missing. Override with `QWEN3_TTS_RUST_WORKER_PATH`, `QWEN3_TTS_RUST_MODEL_PATH`, and `QWEN3_TTS_RUST_MODEL_REPO` if needed.
+The default model is the 1.7B 6-bit MLX model:
 
-To run dev mode with the optional Python/MLX worker:
+```text
+~/models/qwen3-tts-12hz-1.7b-base-6bit
+mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit
+```
+
+Pipi provisions missing model files on startup. Override paths/source with:
+
+```bash
+QWEN3_TTS_RUST_WORKER_PATH=/path/to/pibot-tts-worker
+QWEN3_TTS_RUST_MODEL_PATH=/path/to/model-dir
+QWEN3_TTS_RUST_MODEL_REPO=mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit
+```
+
+To test the 0.6B 6-bit MLX model:
+
+```bash
+QWEN3_TTS_RUST_MODEL_PATH=~/models/qwen3-tts-12hz-0.6b-base-6bit \
+QWEN3_TTS_RUST_MODEL_REPO=mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit \
+npm run dev
+```
+
+To run the optional Python/MLX worker:
 
 ```bash
 QWEN3_TTS_WORKER=python npm run dev

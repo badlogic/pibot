@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { createWriteStream, existsSync } from "node:fs";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { createWriteStream, type Dirent, existsSync } from "node:fs";
+import { mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Logger } from "./logger.js";
 
@@ -14,7 +14,7 @@ const workerOutputAudioChunk = 3;
 const workerOutputAudioDone = 4;
 const workerOutputError = 5;
 const frameHeaderBytes = 9;
-const defaultRustTtsModelRepo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base";
+const defaultRustTtsModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit";
 const ignoredHuggingFaceFiles = new Set([".gitattributes", "README.md"]);
 const requiredRustTtsModelFiles = [
 	"config.json",
@@ -176,8 +176,26 @@ async function downloadFile(file: DownloadFile, logger: Logger): Promise<void> {
 	}
 }
 
+async function cleanupStaleDownloads(dir: string): Promise<void> {
+	let entries: Dirent[];
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			await cleanupStaleDownloads(path);
+			continue;
+		}
+		if (entry.isFile() && entry.name.includes(".tmp-")) await unlink(path).catch(() => undefined);
+	}
+}
+
 async function ensureRustTtsModel(modelDir: string, logger: Logger): Promise<void> {
 	await mkdir(modelDir, { recursive: true });
+	await cleanupStaleDownloads(modelDir);
 	if (await hasRequiredRustTtsModelFiles(modelDir)) return;
 
 	const repo = process.env.QWEN3_TTS_RUST_MODEL_REPO ?? defaultRustTtsModelRepo;
@@ -196,7 +214,7 @@ async function ensureRustTtsModel(modelDir: string, logger: Logger): Promise<voi
 
 export function createTtsService(deps: TtsServiceDeps): TtsService {
 	const workerKind = parseWorkerKind(deps.workerKind);
-	const qwen3ModelName = process.env.QWEN3_TTS_MODEL_NAME ?? "Qwen/Qwen3-TTS-12Hz-1.7B-Base";
+	const qwen3ModelName = process.env.QWEN3_TTS_MODEL_NAME ?? "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit";
 	const qwen3RefAudio = process.env.QWEN3_TTS_REF_AUDIO ?? "data/voices/elevenlabs-pibot-reference-de.wav";
 	const qwen3RefTextFile = process.env.QWEN3_TTS_REF_TEXT_FILE ?? "data/voices/elevenlabs-pibot-reference-de.txt";
 	const qwen3Language = process.env.QWEN3_TTS_LANGUAGE ?? "de";

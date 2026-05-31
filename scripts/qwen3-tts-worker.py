@@ -34,7 +34,7 @@ BASE_PROMPT_SECONDS = 1.0
 PUNCTUATION_PAUSE_SECONDS = 0.5
 VALID_MLX_QUANTIZATION_SUFFIXES = ("bf16", "4bit", "6bit", "8bit")
 
-DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+DEFAULT_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit"
 DEFAULT_REF_TEXT = "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes."
 NORMALIZED_REF_AUDIO_CACHE: dict[str, str] = {}
 BINARY_MODE = False

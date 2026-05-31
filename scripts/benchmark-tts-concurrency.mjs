@@ -20,8 +20,8 @@ const KID_TEXTS = [
 
 function parseArgs(argv) {
 	const args = {
-		worker: process.env.QWEN3_TTS_RUST_WORKER_PATH ?? "native/qwen3_tts_rs/target/release/worker",
-		model: process.env.QWEN3_TTS_RUST_MODEL_PATH ?? `${process.env.HOME}/models/qwen3-tts-12hz-0.6b-base`,
+		worker: process.env.QWEN3_TTS_RUST_WORKER_PATH ?? "native/qwen3_tts_rs/target/release/pibot-tts-worker",
+		model: process.env.QWEN3_TTS_RUST_MODEL_PATH ?? `${process.env.HOME}/models/qwen3-tts-12hz-1.7b-base-6bit`,
 		refAudio: process.env.QWEN3_TTS_REF_AUDIO ?? "data/voices/elevenlabs-pibot-reference.wav",
 		refTextFile: process.env.QWEN3_TTS_REF_TEXT_FILE ?? "data/voices/elevenlabs-pibot-reference.txt",
 		language: process.env.QWEN3_TTS_LANGUAGE ?? "english",

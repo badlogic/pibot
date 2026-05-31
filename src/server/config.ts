@@ -32,10 +32,10 @@ export const serverConfig = {
 		process.env.QWEN3_TTS_RUST_WORKER_PATH ??
 		resolve(
 			serverDir,
-			`../../native/qwen3_tts_rs/target/release/worker${process.platform === "win32" ? ".exe" : ""}`,
+			`../../native/qwen3_tts_rs/target/release/pibot-tts-worker${process.platform === "win32" ? ".exe" : ""}`,
 		),
 	qwen3TtsRustModelPath:
-		process.env.QWEN3_TTS_RUST_MODEL_PATH ?? resolve(homedir(), "models/qwen3-tts-12hz-0.6b-base"),
+		process.env.QWEN3_TTS_RUST_MODEL_PATH ?? resolve(homedir(), "models/qwen3-tts-12hz-1.7b-base-6bit"),
 	version: String(Date.now()),
 	maxContextImages: Number(process.env.MAX_CONTEXT_IMAGES ?? 4),
 	memoryFile: process.env.MEMORY_FILE ?? "data/memories.json",
