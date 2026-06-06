@@ -2,3 +2,7 @@
 	path = native/qwen3_tts_rs
 	url = https://github.com/badlogic/qwen3_tts_rs.git
 	branch = optimize-mlx-kv-cache
+[submodule "native/qwen3-tts.cpp"]
+	path = native/qwen3-tts.cpp
+	url = https://github.com/badlogic/qwen3-tts.cpp.git
+	branch = cleanup-metal-no-coreml
