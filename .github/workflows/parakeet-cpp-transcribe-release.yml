@@ -15,78 +15,39 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: build ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-14
-          - arch: x86_64
-            runner: macos-13
+  release:
+    name: build and release macOS universal binary
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure
-        run: cmake -S native/parakeet-cpp-stt -B native/parakeet-cpp-stt/build-release -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+      - name: Configure universal macOS build
+        run: cmake -S native/parakeet-cpp-stt -B native/parakeet-cpp-stt/build-release -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: Build
         run: cmake --build native/parakeet-cpp-stt/build-release --target parakeet-cpp-transcribe -j
 
-      - name: Verify only system dylibs are linked
+      - name: Verify binary
         run: |
+          file native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe
+          lipo -info native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe
           otool -L native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe
           if otool -L native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe | grep -E '@rpath|libggml|libparakeet'; then
             echo "unexpected non-system dynamic dependency" >&2
             exit 1
           fi
+          native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe --help
 
-      - name: Package arch binary
+      - name: Package release assets
         run: |
-          mkdir -p dist/${{ matrix.arch }}
-          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe dist/${{ matrix.arch }}/parakeet-cpp-transcribe
-          tar -C dist/${{ matrix.arch }} -czf parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz parakeet-cpp-transcribe
-          shasum -a 256 parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz > parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz.sha256
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: parakeet-cpp-transcribe-macos-${{ matrix.arch }}
-          path: |
-            parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz
-            parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz.sha256
-            dist/${{ matrix.arch }}/parakeet-cpp-transcribe
-
-  release:
-    name: create release
-    needs: build
-    runs-on: macos-14
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create universal binary package
-        run: |
-          mkdir -p dist/universal
-          lipo -create \
-            artifacts/parakeet-cpp-transcribe-macos-arm64/dist/arm64/parakeet-cpp-transcribe \
-            artifacts/parakeet-cpp-transcribe-macos-x86_64/dist/x86_64/parakeet-cpp-transcribe \
-            -output dist/universal/parakeet-cpp-transcribe
-          lipo -info dist/universal/parakeet-cpp-transcribe
-          tar -C dist/universal -czf parakeet-cpp-transcribe-macos-universal.tar.gz parakeet-cpp-transcribe
-          shasum -a 256 parakeet-cpp-transcribe-macos-universal.tar.gz > parakeet-cpp-transcribe-macos-universal.tar.gz.sha256
-
-      - name: Collect release assets
-        run: |
-          mkdir -p release-assets
-          cp artifacts/parakeet-cpp-transcribe-macos-arm64/parakeet-cpp-transcribe-macos-arm64.tar.gz release-assets/
-          cp artifacts/parakeet-cpp-transcribe-macos-arm64/parakeet-cpp-transcribe-macos-arm64.tar.gz.sha256 release-assets/
-          cp artifacts/parakeet-cpp-transcribe-macos-x86_64/parakeet-cpp-transcribe-macos-x86_64.tar.gz release-assets/
-          cp artifacts/parakeet-cpp-transcribe-macos-x86_64/parakeet-cpp-transcribe-macos-x86_64.tar.gz.sha256 release-assets/
-          cp parakeet-cpp-transcribe-macos-universal.tar.gz release-assets/
-          cp parakeet-cpp-transcribe-macos-universal.tar.gz.sha256 release-assets/
+          mkdir -p dist/universal dist/arm64 dist/x86_64 release-assets
+          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe dist/universal/parakeet-cpp-transcribe
+          lipo -thin arm64 dist/universal/parakeet-cpp-transcribe -output dist/arm64/parakeet-cpp-transcribe
+          lipo -thin x86_64 dist/universal/parakeet-cpp-transcribe -output dist/x86_64/parakeet-cpp-transcribe
+          tar -C dist/universal -czf release-assets/parakeet-cpp-transcribe-macos-universal.tar.gz parakeet-cpp-transcribe
+          tar -C dist/arm64 -czf release-assets/parakeet-cpp-transcribe-macos-arm64.tar.gz parakeet-cpp-transcribe
+          tar -C dist/x86_64 -czf release-assets/parakeet-cpp-transcribe-macos-x86_64.tar.gz parakeet-cpp-transcribe
+          shasum -a 256 release-assets/*.tar.gz > release-assets/SHA256SUMS
 
       - name: Release
         uses: softprops/action-gh-release@v2
