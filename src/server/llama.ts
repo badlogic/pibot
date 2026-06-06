@@ -160,6 +160,14 @@ async function runCommand(file: string, args: string[], cwd: string, logger: Log
 }
 
 async function ensureLlamaBinary(cacheDir: string, logger: Logger): Promise<string> {
+	const overridePath = process.env.LLAMA_CPP_BINARY_PATH;
+	if (overridePath) {
+		if (!(await hasUsableFile(overridePath)))
+			throw new Error(`LLAMA_CPP_BINARY_PATH is not a usable file: ${overridePath}`);
+		logger.log(`using llama.cpp binary override: ${overridePath}`);
+		return overridePath;
+	}
+
 	const binaryPath = llamaBinaryPath(cacheDir);
 	if (await hasUsableFile(binaryPath)) return binaryPath;
 
