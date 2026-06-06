@@ -16,13 +16,13 @@ permissions:
 
 jobs:
   release:
-    name: build and release macOS universal binary
+    name: build and release macOS Apple Silicon binary
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure universal macOS build
-        run: cmake -S native/parakeet-cpp-stt -B native/parakeet-cpp-stt/build-release -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+      - name: Configure arm64 macOS build
+        run: cmake -S native/parakeet-cpp-stt -B native/parakeet-cpp-stt/build-release -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
 
       - name: Build
         run: cmake --build native/parakeet-cpp-stt/build-release --target parakeet-cpp-transcribe -j
@@ -40,14 +40,10 @@ jobs:
 
       - name: Package release assets
         run: |
-          mkdir -p dist/universal dist/arm64 dist/x86_64 release-assets
-          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe dist/universal/parakeet-cpp-transcribe
-          lipo -thin arm64 dist/universal/parakeet-cpp-transcribe -output dist/arm64/parakeet-cpp-transcribe
-          lipo -thin x86_64 dist/universal/parakeet-cpp-transcribe -output dist/x86_64/parakeet-cpp-transcribe
-          tar -C dist/universal -czf release-assets/parakeet-cpp-transcribe-macos-universal.tar.gz parakeet-cpp-transcribe
-          tar -C dist/arm64 -czf release-assets/parakeet-cpp-transcribe-macos-arm64.tar.gz parakeet-cpp-transcribe
-          tar -C dist/x86_64 -czf release-assets/parakeet-cpp-transcribe-macos-x86_64.tar.gz parakeet-cpp-transcribe
-          shasum -a 256 release-assets/*.tar.gz > release-assets/SHA256SUMS
+          mkdir -p dist release-assets
+          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe dist/parakeet-cpp-transcribe
+          tar -C dist -czf release-assets/parakeet-cpp-transcribe-macos-arm64.tar.gz parakeet-cpp-transcribe
+          shasum -a 256 release-assets/parakeet-cpp-transcribe-macos-arm64.tar.gz > release-assets/parakeet-cpp-transcribe-macos-arm64.tar.gz.sha256
 
       - name: Release
         uses: softprops/action-gh-release@v2
