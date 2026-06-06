@@ -9,6 +9,9 @@ include(FetchContent)
 
 option(PARAKEET_CPP_STT_METAL "Enable GGML Metal backend on Apple platforms" ${APPLE})
 
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(PARAKEET_GGML_METAL ${PARAKEET_CPP_STT_METAL} CACHE BOOL "" FORCE)
 set(GGML_METAL ${PARAKEET_CPP_STT_METAL} CACHE BOOL "" FORCE)
 
@@ -62,3 +65,7 @@ FetchContent_MakeAvailable(whisper_cpp)
 add_executable(parakeet-cpp-stt-worker src/main.cpp)
 target_include_directories(parakeet-cpp-stt-worker PRIVATE ${parakeet_cpp_SOURCE_DIR}/src)
 target_link_libraries(parakeet-cpp-stt-worker PRIVATE parakeet whisper)
+
+add_executable(parakeet-cpp-transcribe src/cli.cpp)
+target_include_directories(parakeet-cpp-transcribe PRIVATE ${parakeet_cpp_SOURCE_DIR}/src)
+target_link_libraries(parakeet-cpp-transcribe PRIVATE parakeet)

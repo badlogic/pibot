@@ -1,0 +1,97 @@
+name: parakeet-cpp-transcribe macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to create/update, e.g. parakeet-cpp-transcribe-v0.1.0"
+        required: true
+        type: string
+  push:
+    tags:
+      - "parakeet-cpp-transcribe-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S native/parakeet-cpp-stt -B native/parakeet-cpp-stt/build-release -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+
+      - name: Build
+        run: cmake --build native/parakeet-cpp-stt/build-release --target parakeet-cpp-transcribe -j
+
+      - name: Verify only system dylibs are linked
+        run: |
+          otool -L native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe
+          if otool -L native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe | grep -E '@rpath|libggml|libparakeet'; then
+            echo "unexpected non-system dynamic dependency" >&2
+            exit 1
+          fi
+
+      - name: Package arch binary
+        run: |
+          mkdir -p dist/${{ matrix.arch }}
+          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe dist/${{ matrix.arch }}/parakeet-cpp-transcribe
+          tar -C dist/${{ matrix.arch }} -czf parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz parakeet-cpp-transcribe
+          shasum -a 256 parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz > parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parakeet-cpp-transcribe-macos-${{ matrix.arch }}
+          path: |
+            parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz
+            parakeet-cpp-transcribe-macos-${{ matrix.arch }}.tar.gz.sha256
+            dist/${{ matrix.arch }}/parakeet-cpp-transcribe
+
+  release:
+    name: create release
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create universal binary package
+        run: |
+          mkdir -p dist/universal
+          lipo -create \
+            artifacts/parakeet-cpp-transcribe-macos-arm64/dist/arm64/parakeet-cpp-transcribe \
+            artifacts/parakeet-cpp-transcribe-macos-x86_64/dist/x86_64/parakeet-cpp-transcribe \
+            -output dist/universal/parakeet-cpp-transcribe
+          lipo -info dist/universal/parakeet-cpp-transcribe
+          tar -C dist/universal -czf parakeet-cpp-transcribe-macos-universal.tar.gz parakeet-cpp-transcribe
+          shasum -a 256 parakeet-cpp-transcribe-macos-universal.tar.gz > parakeet-cpp-transcribe-macos-universal.tar.gz.sha256
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          cp artifacts/parakeet-cpp-transcribe-macos-arm64/parakeet-cpp-transcribe-macos-arm64.tar.gz release-assets/
+          cp artifacts/parakeet-cpp-transcribe-macos-arm64/parakeet-cpp-transcribe-macos-arm64.tar.gz.sha256 release-assets/
+          cp artifacts/parakeet-cpp-transcribe-macos-x86_64/parakeet-cpp-transcribe-macos-x86_64.tar.gz release-assets/
+          cp artifacts/parakeet-cpp-transcribe-macos-x86_64/parakeet-cpp-transcribe-macos-x86_64.tar.gz.sha256 release-assets/
+          cp parakeet-cpp-transcribe-macos-universal.tar.gz release-assets/
+          cp parakeet-cpp-transcribe-macos-universal.tar.gz.sha256 release-assets/
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          files: release-assets/*
+          generate_release_notes: true
