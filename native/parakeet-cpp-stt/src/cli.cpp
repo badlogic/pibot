@@ -14,7 +14,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <unistd.h>
 
 static constexpr int TARGET_SAMPLE_RATE = 16000;
 static constexpr size_t DEFAULT_CHUNK_SECONDS = 30;
