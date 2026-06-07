@@ -4,8 +4,8 @@ Pipi is a smartphone robot that can talk, remember things, take photos, and driv
 
 ## Requirements
 
-- macOS/Apple Silicon for local Qwen3-TTS speech synthesis.
-- Linux x86_64 is supported for LLM and STT; TTS is disabled by default on non-macOS.
+- macOS/Apple Silicon or Linux x86_64 for local Qwen3-TTS speech synthesis.
+- Linux uses Vulkan for native STT/TTS acceleration.
 - The default local model set needs about 8-10 GB of unified memory at runtime.
 - Node.js 22+, CMake, pkg-config, C/C++ build tools, and `tar`.
 - Xcode command line tools, Xcode Metal Toolchain, and Opus are required for the macOS Qwen3-TTS worker. Rust is only needed for the optional Rust/MLX worker (`QWEN3_TTS_WORKER=rust`).
@@ -28,9 +28,20 @@ For AMD Strix Halo/Radeon 8060S, install ROCm 7.2.2 from AMD's noble repository 
 
 ## Setup
 
+Fast path after cloning:
+
 ```bash
-npm install --ignore-scripts
-npm run submodules
+./setup.sh
+npm run dev
+```
+
+`setup.sh` installs npm dependencies, initializes submodules, and compiles native STT/TTS workers for the active platform.
+
+Manual equivalent:
+
+```bash
+npm ci --ignore-scripts
+git submodule update --init --recursive
 npm run build:native
 npm run dev
 ```
@@ -65,20 +76,22 @@ Pipi runs local LLM, STT, and TTS models. Missing default models are downloaded 
   - Downloaded into: `~/models/whisper-vad/ggml-silero-v6.2.0.bin`.
   - Override with `PARAKEET_CPP_MODEL_PATH`/`PARAKEET_CPP_MODEL_FILE` and `SILERO_VAD_GGML_MODEL_PATH`/`SILERO_VAD_GGML_MODEL_FILE`.
 
-- TTS default: native C++/GGML Qwen3-TTS worker (Metal) on macOS/Apple Silicon (`QWEN3_TTS_WORKER=cpp`).
-  - Built with `npm run build:tts-cpp` (also part of `npm run build:native`).
+- TTS default: native C++/GGML Qwen3-TTS worker (`QWEN3_TTS_WORKER=cpp`).
+  - Uses Metal on macOS and Vulkan on Linux/Windows.
+  - Built with `npm run build:tts-cpp` (also part of `npm run build:native` and `./setup.sh`).
   - Model: `badlogicgames/qwen3-tts-0.6b-q8_0-gguf` (Q8_0 GGUF + tokenizer).
   - Downloaded into: `~/models/qwen3-tts-0.6b-q8_0-gguf`.
   - Override with `QWEN3_TTS_CPP_WORKER_PATH` / `QWEN3_TTS_CPP_MODEL_PATH` / `QWEN3_TTS_CPP_MODEL_REPO`.
-  - Uses x-vector voice cloning. Disabled by default on Linux/Windows (Vulkan port planned).
+  - Uses x-vector voice cloning.
 - TTS alternative: Rust Qwen3-TTS 0.6B Base 6-bit MLX (`QWEN3_TTS_WORKER=rust`).
   - Better voice cloning (ICL), but requires Rust + Apple MLX; build with `npm run build:tts-rust`.
   - Model: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit`, downloaded into `~/models/qwen3-tts-12hz-0.6b-base-6bit`.
-- Select the TTS engine with `QWEN3_TTS_WORKER` (`cpp` default on macOS, `rust`, `python`, or `disabled`).
+- Select the TTS engine with `QWEN3_TTS_WORKER` (`cpp` default, `rust`, `python`, or `disabled`).
 
 ## Commands
 
 ```bash
+./setup.sh              # install deps, initialize submodules, build native workers
 npm run dev             # start the development server
 npm run build:native    # build STT and TTS native workers
 npm run build:stt-parakeet-cpp # build the native parakeet.cpp STT worker
