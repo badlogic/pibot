@@ -25,18 +25,21 @@ jobs:
             artifact_name: pibot-parakeet-linux-x64-vulkan
             archive_name: pibot-parakeet-linux-x64-vulkan.tar.gz
             cmake_args: -DCMAKE_BUILD_TYPE=Release -DPARAKEET_CPP_STT_VULKAN=ON
+            build_dir: native/parakeet-cpp-stt/build-release
             build_config: Release
             exe_suffix: ""
           - os: macos-14
             artifact_name: pibot-parakeet-macos-arm64-metal
             archive_name: pibot-parakeet-macos-arm64-metal.tar.gz
             cmake_args: -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DPARAKEET_CPP_STT_METAL=ON
+            build_dir: native/parakeet-cpp-stt/build-release
             build_config: Release
             exe_suffix: ""
           - os: windows-2025
             artifact_name: pibot-parakeet-windows-x64-vulkan
             archive_name: pibot-parakeet-windows-x64-vulkan.zip
             cmake_args: -DPARAKEET_CPP_STT_VULKAN=ON
+            build_dir: C:/b
             build_config: Release
             exe_suffix: ".exe"
     runs-on: ${{ matrix.os }}
@@ -62,10 +65,10 @@ jobs:
           "$($vulkanSdk.FullName)/Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Configure
-        run: cmake -S native/parakeet-cpp-stt -B native/parakeet-cpp-stt/build-release ${{ matrix.cmake_args }}
+        run: cmake -S native/parakeet-cpp-stt -B ${{ matrix.build_dir }} ${{ matrix.cmake_args }}
 
       - name: Build
-        run: cmake --build native/parakeet-cpp-stt/build-release --config ${{ matrix.build_config }} --target parakeet-cpp-stt-worker parakeet-cpp-transcribe -j
+        run: cmake --build ${{ matrix.build_dir }} --config ${{ matrix.build_config }} --target parakeet-cpp-stt-worker parakeet-cpp-transcribe -j
 
       - name: Stage Unix binaries
         if: runner.os != 'Windows'
@@ -73,8 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/${{ matrix.artifact_name }} release-assets
-          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-stt-worker dist/${{ matrix.artifact_name }}/
-          cp native/parakeet-cpp-stt/build-release/parakeet-cpp-transcribe dist/${{ matrix.artifact_name }}/
+          cp ${{ matrix.build_dir }}/parakeet-cpp-stt-worker dist/${{ matrix.artifact_name }}/
+          cp ${{ matrix.build_dir }}/parakeet-cpp-transcribe dist/${{ matrix.artifact_name }}/
           chmod +x dist/${{ matrix.artifact_name }}/parakeet-cpp-stt-worker dist/${{ matrix.artifact_name }}/parakeet-cpp-transcribe
           dist/${{ matrix.artifact_name }}/parakeet-cpp-transcribe --help
           tar -C dist -czf release-assets/${{ matrix.archive_name }} ${{ matrix.artifact_name }}
@@ -86,8 +89,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "dist/${{ matrix.artifact_name }}" | Out-Null
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
-          Copy-Item "native/parakeet-cpp-stt/build-release/${{ matrix.build_config }}/parakeet-cpp-stt-worker.exe" "dist/${{ matrix.artifact_name }}/"
-          Copy-Item "native/parakeet-cpp-stt/build-release/${{ matrix.build_config }}/parakeet-cpp-transcribe.exe" "dist/${{ matrix.artifact_name }}/"
+          Copy-Item "${{ matrix.build_dir }}/${{ matrix.build_config }}/parakeet-cpp-stt-worker.exe" "dist/${{ matrix.artifact_name }}/"
+          Copy-Item "${{ matrix.build_dir }}/${{ matrix.build_config }}/parakeet-cpp-transcribe.exe" "dist/${{ matrix.artifact_name }}/"
           & "dist/${{ matrix.artifact_name }}/parakeet-cpp-transcribe.exe" --help
           Compress-Archive -Path "dist/${{ matrix.artifact_name }}" -DestinationPath "release-assets/${{ matrix.archive_name }}" -Force
           $hash = Get-FileHash "release-assets/${{ matrix.archive_name }}" -Algorithm SHA256
