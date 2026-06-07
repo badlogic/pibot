@@ -364,14 +364,11 @@ async function pollReloadVersion(): Promise<void> {
 	}
 }
 
-function connectReloadSocket(reloadOnOpen = false): void {
+function connectReloadSocket(): void {
 	const reloadWs = new WebSocket(`${wsProtocol}://${location.host}/__reload`);
-	reloadWs.onopen = () => {
-		if (reloadOnOpen) requestAutoReload("reload socket reconnected");
-	};
 	reloadWs.onmessage = () => requestAutoReload("reload socket message");
 	reloadWs.onclose = () => {
-		setTimeout(() => connectReloadSocket(true), 500);
+		setTimeout(connectReloadSocket, 500);
 	};
 	reloadWs.onerror = () => reloadWs.close();
 }

@@ -24,6 +24,8 @@ const ggmlArgs = [
 	"-DCMAKE_BUILD_TYPE=Release",
 	"-DGGML_BUILD_TESTS=OFF",
 	"-DGGML_BUILD_EXAMPLES=OFF",
+	"-DBUILD_SHARED_LIBS=OFF",
+	"-DGGML_STATIC=ON",
 ];
 if (process.platform === "darwin") {
 	ggmlArgs.push("-DGGML_METAL=ON");
